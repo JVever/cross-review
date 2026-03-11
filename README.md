@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README_CN.md)
 
-Multi-model collaboration skill for [Claude Code](https://claude.ai/code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), and other AI coding tools.
+Multi-model collaboration skill for AI coding tools -- works in [Claude Code](https://claude.ai/code), [Cursor](https://www.cursor.com/), [Trae](https://www.trae.ai/), [Windsurf](https://windsurf.com/), and any tool that can read instructions and run terminal commands.
 
 Orchestrate multiple AI models to collaboratively review designs, audit code, critique proposals, and stress-test solutions -- producing higher quality output than any single model alone.
 
@@ -27,18 +27,29 @@ Two modes available:
 /plugin marketplace add JVever/cross-review
 ```
 
-### Manual Installation
+### Cursor / Windsurf
 
-Clone and symlink to your skills directory:
+Clone the repo and copy the skill into your project's rules directory:
 
 ```bash
 git clone https://github.com/JVever/cross-review.git
+cp -r cross-review/skills/cross-review/ .cursor/rules/cross-review/
+```
+
+### Other Tools
+
+Clone the repo, then add or symlink the skill files to wherever your tool reads instructions:
+
+```bash
+git clone https://github.com/JVever/cross-review.git
+# Claude Code manual install:
 ln -s "$(pwd)/cross-review/skills/cross-review" ~/.claude/skills/cross-review
+# Or copy to your tool's rules/skills directory
 ```
 
 ## Usage
 
-In Claude Code, trigger the skill with natural language:
+Trigger the skill with natural language in your AI coding tool:
 
 ```
 cross review this architecture design
@@ -79,11 +90,11 @@ skills/cross-review/
 
 ## Requirements
 
-- [Claude Code](https://claude.ai/code) (primary)
-- At least one additional AI CLI tool for multi-model collaboration:
+- **Primary tool** (runs the skill): Any AI coding tool that can read instructions and execute terminal commands -- [Claude Code](https://claude.ai/code), [Cursor](https://www.cursor.com/), [Trae](https://www.trae.ai/), [Windsurf](https://windsurf.com/), etc.
+- **External models** (called via CLI for multi-model collaboration): At least one of:
   - [Codex CLI](https://github.com/openai/codex)
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-  - Also compatible with [Kimi Code](https://github.com/anthropics/kimi-code), [OpenCode](https://github.com/anthropics/opencode), [Trae CLI](https://www.trae.ai/), and any other AI tool with a non-interactive CLI mode
+  - [Claude Code](https://claude.ai/code), [Kimi Code](https://github.com/anthropics/kimi-code), [OpenCode](https://github.com/anthropics/opencode), or any AI tool with a non-interactive CLI mode
 
 > The skill also works with a single model by switching perspectives across rounds, but multi-model setups produce significantly better results.
 

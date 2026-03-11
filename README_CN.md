@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README_CN.md)
 
-多模型协作 Skill，适用于 [Claude Code](https://claude.ai/code)、[Codex CLI](https://github.com/openai/codex)、[Gemini CLI](https://github.com/google-gemini/gemini-cli) 等 AI 编程工具。
+多模型协作 Skill，适用于 [Claude Code](https://claude.ai/code)、[Cursor](https://www.cursor.com/)、[Trae](https://www.trae.ai/)、[Windsurf](https://windsurf.com/) 等任何能读取指令并执行终端命令的 AI 编程工具。
 
 编排多个 AI 模型协同工作，通过交叉验证和对抗性测试，产出比单模型更高质量的结果。
 
@@ -27,18 +27,29 @@ Round 4: 对抗性挑战     "魔鬼代言人"尝试攻破方案（并行）
 /plugin marketplace add JVever/cross-review
 ```
 
-### 手动安装
+### Cursor / Windsurf
 
-克隆仓库并创建符号链接：
+克隆仓库，将 skill 复制到项目的规则目录：
 
 ```bash
 git clone https://github.com/JVever/cross-review.git
+cp -r cross-review/skills/cross-review/ .cursor/rules/cross-review/
+```
+
+### 其他工具
+
+克隆仓库后，将 skill 文件添加或链接到你的工具读取指令的目录：
+
+```bash
+git clone https://github.com/JVever/cross-review.git
+# Claude Code 手动安装：
 ln -s "$(pwd)/cross-review/skills/cross-review" ~/.claude/skills/cross-review
+# 或复制到你使用的工具的 rules/skills 目录
 ```
 
 ## 使用方式
 
-在 Claude Code 中用自然语言触发：
+在你的 AI 编程工具中用自然语言触发：
 
 ```
 帮我交叉评审一下这个方案
@@ -79,11 +90,11 @@ skills/cross-review/
 
 ## 环境要求
 
-- [Claude Code](https://claude.ai/code)（主模型）
-- 至少一个额外的 AI CLI 工具：
+- **主工具**（运行 skill）：任何能读取指令并执行终端命令的 AI 编程工具 —— [Claude Code](https://claude.ai/code)、[Cursor](https://www.cursor.com/)、[Trae](https://www.trae.ai/)、[Windsurf](https://windsurf.com/) 等
+- **外部模型**（通过 CLI 调用，实现多模型协作）：至少一个：
   - [Codex CLI](https://github.com/openai/codex)
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-  - 也兼容 [Kimi Code](https://github.com/anthropics/kimi-code)、[OpenCode](https://github.com/anthropics/opencode)、[Trae CLI](https://www.trae.ai/) 等任何支持非交互模式的 AI CLI 工具
+  - [Claude Code](https://claude.ai/code)、[Kimi Code](https://github.com/anthropics/kimi-code)、[OpenCode](https://github.com/anthropics/opencode) 或任何支持非交互模式的 AI CLI 工具
 
 > 单模型也可以使用（通过在不同轮次切换视角），但多模型协作效果显著更好。
 
