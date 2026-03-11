@@ -1,0 +1,19 @@
+{
+  "name": "cross-review",
+  "owner": {
+    "name": "JVStop"
+  },
+  "metadata": {
+    "description": "Multi-model collaboration skill for cross-review and design critique",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "cross-review",
+      "source": "./",
+      "description": "Orchestrate multiple AI models (Claude, Codex, Gemini, etc.) for collaborative review, design critique, and adversarial testing",
+      "version": "1.0.0",
+      "keywords": ["multi-model", "cross-review", "collaboration", "adversarial-testing", "design-critique"]
+    }
+  ]
+}
