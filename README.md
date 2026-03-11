@@ -1,5 +1,7 @@
 # Cross-Review
 
+[English](README.md) | [中文](README_CN.md)
+
 Multi-model collaboration skill for [Claude Code](https://claude.ai/code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), and other AI coding tools.
 
 Orchestrate multiple AI models to collaboratively review designs, audit code, critique proposals, and stress-test solutions -- producing higher quality output than any single model alone.
@@ -81,8 +83,7 @@ skills/cross-review/
 - At least one additional AI CLI tool for multi-model collaboration:
   - [Codex CLI](https://github.com/openai/codex)
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-  - [Aider](https://github.com/paul-gauthier/aider)
-  - Or any AI tool with a non-interactive CLI mode
+  - Also compatible with [Kimi Code](https://github.com/anthropics/kimi-code), [OpenCode](https://github.com/anthropics/opencode), [Trae CLI](https://www.trae.ai/), and any other AI tool with a non-interactive CLI mode
 
 > The skill also works with a single model by switching perspectives across rounds, but multi-model setups produce significantly better results.
 
