@@ -22,7 +22,7 @@ Two modes available:
 ### Claude Code
 
 ```bash
-/plugin marketplace add JVStop/cross-review
+/plugin marketplace add JVever/cross-review
 ```
 
 ### Manual Installation
@@ -30,7 +30,7 @@ Two modes available:
 Clone and symlink to your skills directory:
 
 ```bash
-git clone https://github.com/JVStop/cross-review.git
+git clone https://github.com/JVever/cross-review.git
 ln -s "$(pwd)/cross-review/skills/cross-review" ~/.claude/skills/cross-review
 ```
 
