@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README_CN.md)
 
-Multi-model collaboration skill for AI coding tools that support custom skills/rules, such as [Claude Code](https://claude.ai/code), [Cursor](https://www.cursor.com/), [Trae](https://www.trae.ai/), [Windsurf](https://windsurf.com/), etc.
+Multi-model collaboration skill for AI coding tools that support custom skills, such as [Claude Code](https://claude.ai/code), [Cursor](https://www.cursor.com/), [Trae](https://www.trae.ai/), [Windsurf](https://windsurf.com/), etc.
 
 Orchestrate multiple AI models to collaboratively review designs, audit code, critique proposals, and stress-test solutions -- producing higher quality output than any single model alone.
 
@@ -90,7 +90,7 @@ skills/cross-review/
 
 ## Requirements
 
-- **Primary tool** (runs the skill): Any AI coding tool that supports custom skills/rules -- [Claude Code](https://claude.ai/code), [Cursor](https://www.cursor.com/), [Trae](https://www.trae.ai/), [Windsurf](https://windsurf.com/), etc.
+- **Primary tool** (runs the skill): Any AI coding tool that supports custom skills -- [Claude Code](https://claude.ai/code), [Cursor](https://www.cursor.com/), [Trae](https://www.trae.ai/), [Windsurf](https://windsurf.com/), etc.
 - **External models** (called via CLI for multi-model collaboration): At least one of:
   - [Codex CLI](https://github.com/openai/codex)
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli)

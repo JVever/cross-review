@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README_CN.md)
 
-多模型协作 Skill，适用于支持自定义技能/规则的 AI 编程工具，如 [Claude Code](https://claude.ai/code)、[Cursor](https://www.cursor.com/)、[Trae](https://www.trae.ai/)、[Windsurf](https://windsurf.com/) 等。
+多模型协作 Skill，适用于支持自定义 Skill 的 AI 编程工具，如 [Claude Code](https://claude.ai/code)、[Cursor](https://www.cursor.com/)、[Trae](https://www.trae.ai/)、[Windsurf](https://windsurf.com/) 等。
 
 编排多个 AI 模型协同工作，通过交叉验证和对抗性测试，产出比单模型更高质量的结果。
 
@@ -90,7 +90,7 @@ skills/cross-review/
 
 ## 环境要求
 
-- **主工具**（运行 skill）：任何支持自定义技能/规则的 AI 编程工具 —— [Claude Code](https://claude.ai/code)、[Cursor](https://www.cursor.com/)、[Trae](https://www.trae.ai/)、[Windsurf](https://windsurf.com/) 等
+- **主工具**（运行 skill）：任何支持自定义 Skill 的 AI 编程工具 —— [Claude Code](https://claude.ai/code)、[Cursor](https://www.cursor.com/)、[Trae](https://www.trae.ai/)、[Windsurf](https://windsurf.com/) 等
 - **外部模型**（通过 CLI 调用，实现多模型协作）：至少一个：
   - [Codex CLI](https://github.com/openai/codex)
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli)
