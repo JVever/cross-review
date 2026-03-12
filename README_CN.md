@@ -56,7 +56,7 @@ ln -s "$(pwd)/cross-review/skills/cross-review" ~/.claude/skills/cross-review
 ```
 
 ```
-cross review this architecture design
+和 Gemini 一起讨论一下这个架构设计
 ```
 
 ```

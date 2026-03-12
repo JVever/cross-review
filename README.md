@@ -56,7 +56,7 @@ cross review this architecture design
 ```
 
 ```
-帮我交叉评审一下这个方案
+discuss this architecture with Gemini
 ```
 
 ```
