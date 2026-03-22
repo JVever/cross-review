@@ -39,31 +39,140 @@ The lead model dynamically assigns focus perspectives based on task type. These 
 
 | Model Count | Round 1-2 | Round 3 | Round 4 |
 |-------------|-----------|---------|---------|
-| 3 (optimal) | Each with independent focus perspective | Lead model synthesizes | Dedicated devil's advocate |
-| 2 | Lead model takes Perspective A+C, external takes B | Lead model synthesizes, external reviews | External as devil's advocate |
+| 3 (optimal) | Each with independent focus perspective | Lead model synthesizes | All models do all 4 checks with emphasis assignments |
+| 2 | Lead model takes Perspective A+C, external takes B | Lead model synthesizes, external reviews | Both do all 4 checks; external emphasizes attack, lead emphasizes synthesis |
 | 1 (minimum) | Lead model switches perspectives via different prompts | Lead model synthesizes | Use explicit adversarial prompt for self-attack |
 
 ---
 
-## Error Handling Principles
+## CLI Configuration Persistence
 
-- Before calling an external model, do a brief connectivity test
-- If a model fails or times out in a round, use degradation strategy to continue with fewer models
-- Lead model should verify external model output is valid (non-empty, not error messages)
-- Completed round reports are saved in the output directory; process can resume from last completed round after interruption
-- Any degradation or anomaly must be clearly communicated to the user
+### Config File Location
+
+`~/.config/cross-review/models.yaml`
+
+### Load/Save Flow
+
+1. **Start of session**: Check if config file exists
+2. **Exists**: Load and display to user for confirmation
+3. **Not exists**: Run detection (`which` commands), confirm with user, save
+4. **User says "switch to X"**: Update the config and save
+
+### Model Name Resolution
+
+When a user references a model by name (e.g., "GLM-4.7"), the lead model should:
+1. Check config for a CLI with matching `model_name` field
+2. If found, use that CLI's `invoke` command
+3. If not found, ask user which CLI to use for that model, then save the mapping
+
+---
+
+## Output Contract Enforcement
+
+### For Codex CLI
+
+**Required flags**: `--full-auto --output-last-message {file} --color never --ephemeral`
+
+- `--output-last-message`: Extracts only the final message, filtering out session metadata, thinking blocks, and command logs
+- `--ephemeral`: No session files persisted
+- `--color never`: No ANSI escape sequences
+
+### For Gemini CLI
+
+**Recommended**: Pipe output to file: `gemini -p "{prompt}" > {file}`
+
+### For Other CLIs
+
+Confirm non-interactive invocation format with user on first use. Store in config.
+
+---
+
+## Output Validation
+
+### Layer 1: Transport Validation (auto, hard fail)
+
+| Check | Fail Condition | Action |
+|-------|---------------|--------|
+| Non-empty | File is 0 bytes | Retry once → degrade |
+| Minimum size | < 200 bytes | Retry once → degrade |
+| No auth prompts | Contains `Opening authentication`, `Y/n`, `Do you want to continue` | Retry once → degrade |
+| No ANSI noise | Contains escape sequences `\x1b[` | Strip sequences, then validate |
+| No help text | Contains `Usage:` and `--help` | Retry once → degrade |
+
+### Layer 2: Semantic Validation (auto, soft fail)
+
+| Check | Fail Condition | Action |
+|-------|---------------|--------|
+| Has expected headings | Missing all of: `## 结论摘要`, `## 发现`, `## 方案` | Mark as low-quality |
+| Has substance | Zero findings or proposals | Mark as low-quality |
+| Has conclusion | Missing `## 一句话结论` | Mark as low-quality |
+
+### Retry Strategy
+
+1. First retry: Use a shortened prompt (remove task materials, keep only task description + focus)
+2. If retry also fails: Degrade (remove this model from current round), inform user
+3. Failed outputs saved to `invalid/` subdirectory
+
+---
+
+## Cross-Round Context: Digest Protocol
+
+### Default: Pass Clean Outputs
+
+External model outputs cleaned via `--output-last-message` (Codex) or equivalent methods are passed directly to subsequent rounds. Clean outputs preserve full information fidelity.
+
+### Optional Digest (When Output > 5000 Words)
+
+When a clean output exceeds ~5000 words, the lead model creates a digest:
+
+1. Extract key findings (with severity ratings)
+2. Extract disagreements and conflicts
+3. Extract open questions
+4. Remove redundant/duplicate points
+5. Save as `r{N}.digest.md`
+6. **Include note**: "This is a summary. Full content available in r{N}.{model}.md"
+
+The digest is sent to external models; the lead model itself reads the full output.
 
 ---
 
 ## Intermediate Results Management
 
-- **Default: save** -- after each round, save each model's output to `cross-review-records/`
-- **Purpose:**
-  - Ensure process can recover after interruption (find context from existing files)
-  - Allow user to review each model's output during the process
-  - Serve as audit trail for final decisions
-- **Post-completion:** Ask user whether to keep intermediate documents or only the final result
-- **User opt-out:** If user explicitly says no saving at startup, only output final result
+### Directory Structure
+
+```
+cross-review-records/
+  run-{YYYYMMDD-HHmm}/
+    r1.{model}.md         # Round 1 outputs
+    r1.digest.md          # Lead model's digest of Round 1
+    r2.{model}.md         # Round 2 outputs
+    r2.5.{model}.md       # Round 2.5 (if triggered)
+    r3.synthesis.md       # Round 3 candidate synthesis
+    r3b.synthesis.md      # Round 3b revision (if Round 4 found Critical)
+    r4.{model}.attack.md  # Round 4 attack reports
+    final.md              # Final output
+    manifest.json         # Run metadata & checkpoint
+    invalid/              # Failed validation outputs
+```
+
+### File Naming Convention
+
+**Strict format**: `r{round}.{model_name}.md`
+
+Forbidden patterns:
+- No free-form suffixes: `-ws`, `-v2`, `-session-fix`, `-raw`
+- No prompt files in the output directory
+- No `.txt` or `.raw.txt` files (always `.md`)
+
+Special files:
+- `r{N}.digest.md` — Digest for round N
+- `r3.synthesis.md` / `r3b.synthesis.md` — Synthesis documents
+- `final.md` — Final output
+- `manifest.json` — Run metadata
+
+### manifest.json
+
+Created at run start, updated after each step. Used for checkpoint/resume.
 
 ---
 
@@ -71,13 +180,17 @@ The lead model dynamically assigns focus perspectives based on task type. These 
 
 After each round, lead model self-checks:
 
-- [ ] All outputs saved to `cross-review-records/`
-- [ ] File naming follows `round{N}-{model_name}.md` format
-- [ ] All models in current round have completed (background tasks returned)
+- [ ] All outputs saved to run directory
+- [ ] File naming follows `r{N}.{model_name}.md` format
+- [ ] External model outputs passed transport validation
+- [ ] External model outputs passed semantic validation (or marked low-quality)
+- [ ] Digest created for cross-round context
+- [ ] All models in current round have completed
 - [ ] Key findings summary reported to user
+- [ ] `manifest.json` updated
 
 After all rounds complete:
 
-- [ ] `final-output.md` contains the final plan/conclusion
+- [ ] `final.md` contains the final plan/conclusion
 - [ ] User provided with summary and suggested next steps
 - [ ] User asked whether to keep intermediate documents

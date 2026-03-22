@@ -10,14 +10,15 @@ Orchestrate multiple AI models to collaboratively review designs, audit code, cr
 
 ```
 Round 1: Independent Work     Each model analyzes from its assigned perspective (parallel)
-Round 2: Cross-Validation     Models review each other's findings, flag disagreements (parallel)
-Round 3: Synthesis            Lead model merges all insights into a unified proposal
-Round 4: Adversarial Attack   "Devil's advocate" tries to break the proposal (parallel)
+Round 2: Cross-Validation     Models review each other's clean findings (parallel)
+Round 2.5: Focused Rebuttal   Resolve critical conflicts before synthesis (optional)
+Round 3: Candidate Synthesis  Lead model proposes candidates + assumption ledger
+Round 4: Adversarial Attack   Split attack checklist across models (parallel)
 ```
 
 Two modes available:
 - **Quick mode** (2 rounds) -- for straightforward tasks needing multiple viewpoints
-- **Full mode** (4 rounds) -- for complex/high-risk tasks needing adversarial testing
+- **Full mode** (4 rounds, with optional 2.5) -- for complex/high-risk tasks needing adversarial testing
 
 ## Installation
 
@@ -65,16 +66,19 @@ multi-model review of the PRD at docs/prd.md
 
 The skill will:
 1. Ask you to describe the task and materials
-2. Detect available AI CLI tools (or ask you to specify)
+2. Load saved CLI config or detect available tools (remembers your setup for next time)
 3. Assign differentiated perspectives to each model
-4. Run the review rounds and produce a final synthesis
+4. Run the review rounds with output validation, and produce a final synthesis
 
 ## Key Features
 
 - **Model-agnostic**: Works with any combination of AI CLI tools
+- **CLI config persistence**: Remembers your tools and invocation methods across sessions
+- **Output quality control**: Fixed output skeleton + two-layer validation prevents bloat and noise
+- **Clean output protocol**: `--output-last-message` strips metadata noise; optional digest for very long outputs (>5000 words)
 - **Graceful degradation**: Adapts from 3 models down to 1 with adjusted strategies
 - **Anti-pattern guards**: Actively fights consensus bias, rubber-stamp reviews, and abstract-only discussion
-- **Resumable**: Saves intermediate outputs so interrupted sessions can continue
+- **Checkpoint/resume**: `manifest.json` tracks progress; interrupted sessions continue from last step
 - **Bilingual triggers**: Responds to both English and Chinese commands
 
 ## File Structure

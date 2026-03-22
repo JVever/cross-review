@@ -22,7 +22,7 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 | 模式 | 轮次 | 适用场景 |
 |------|------|----------|
 | 快速模式 | 2 轮 | 相对明确的任务，需要多视角但不需要深度对抗 |
-| 完备模式 | 4 轮 | 复杂/高风险/高不确定性任务，需要充分的交叉验证和对抗性检验 |
+| 完备模式 | 4 轮（含可选 2.5 轮） | 复杂/高风险/高不确定性任务，需要充分的交叉验证和对抗性检验 |
 
 **模式选择逻辑：**
 
@@ -44,8 +44,9 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 |------|------|------|------|
 | Round 1 | 独立工作 | 多视角并行完成任务 | 并行 |
 | Round 2 | 交叉验证 | 互相质疑与补充 | 并行 |
-| Round 3 | 方案综合 | 综合最优方案 + 列出待检验假设 | 主模型主导 |
-| Round 4 | 对抗性挑战 | 尝试攻破方案，找出遗漏 | 并行，对抗性 |
+| Round 2.5 | 焦点反驳（可选） | 解决 Round 2 中的关键冲突 | 并行，仅在有未解决关键冲突时触发 |
+| Round 3 | 候选综合 | 综合候选方案 + 假设账本 + 未解冲突 | 主模型主导 |
+| Round 4 | 对抗性挑战 | 分工攻破方案，找出遗漏 | 并行，对抗性，按检查项分工 |
 
 ### 三大反模式警示
 
@@ -67,37 +68,74 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 阅读并充分理解任务目标、背景和约束条件。
 
-### Step 2：确认参与协作的模型
+### Step 2：确认参与协作的模型（含 CLI 配置持久化）
 
 > **核心原则：模型无关。** 不假设当前主模型是谁，不假设外部模型是谁。
 
-**引导流程：**
+#### 2a. 加载已有配置
 
-1. **用户已指定模型**（如"用 Codex 和 Gemini"）→ 直接采用
-2. **用户未指定** → 主动询问：
+首先检查是否存在已保存的 CLI 配置文件 `~/.config/cross-review/models.yaml`：
 
-```
-请告诉我参与本次协作的外部模型，例如：
-- Codex CLI
-- Gemini CLI
-- 其他 AI CLI 工具
+- **文件存在** → 读取并展示给用户：`已加载 CLI 配置：codex (Codex CLI), gemini (Gemini CLI), crush (GLM-4.7 via Crush CLI)。确认使用这些工具？`
+  - 用户确认 → 直接采用，跳到 Step 2d
+  - 用户要求修改 → 进入 Step 2b
+- **文件不存在** → 进入 Step 2b（首次使用流程）
 
-或者我可以运行 `which codex gemini` 等命令检测当前系统中已安装的 AI CLI 工具。
-```
+#### 2b. 检测与确认 CLI 工具
 
-3. **自动检测**：运行 `which codex gemini aider` 等命令探测可用的 CLI 工具
-4. **确认调用方式**：确认每个外部模型的非交互模式命令格式，例如：
+1. **用户已指定模型**（如"用 Codex 和 GLM-4.7"）→ 确认对应 CLI 命令
+2. **用户未指定** → 自动检测 + 询问：
+   - 运行 `which codex gemini crush aider` 等命令探测可用的 CLI 工具
+   - 展示检测结果，请用户确认使用哪些
 
-| 模型 | 调用格式示例 |
-|------|-------------|
-| Codex CLI | `echo "$PROMPT" \| codex exec` |
-| Gemini CLI | `cat content \| gemini -p "prompt"` |
+3. **确认调用方式**：对每个外部 CLI 工具，确认其非交互模式的调用格式：
+
+| CLI 工具 | 推荐调用格式 |
+|----------|-------------|
+| Codex CLI | `echo "{prompt}" \| codex exec --full-auto --output-last-message {output_file} --color never --ephemeral` |
+| Gemini CLI | `echo "{prompt}" \| gemini -p > {output_file}` |
 | 其他工具 | 由用户提供调用格式 |
+
+> **Codex 专用说明**：必须使用 `--output-last-message` 只提取最终回答，避免 session 元数据、thinking blocks、命令日志混入输出。`--ephemeral` 避免留下无用 session 文件。
+
+#### 2c. 保存 CLI 配置
+
+将确认后的配置保存到 `~/.config/cross-review/models.yaml`：
+
+```yaml
+# cross-review CLI 配置
+# 由 cross-review skill 自动生成，用户可手动编辑
+last_updated: 2026-03-23
+
+models:
+  codex:
+    cli_path: /opt/homebrew/bin/codex
+    invoke: 'echo "{prompt}" | codex exec --full-auto --output-last-message {output_file} --color never --ephemeral'
+    notes: "OpenAI Codex CLI"
+
+  gemini:
+    cli_path: /opt/homebrew/bin/gemini
+    invoke: 'gemini -p "{prompt}" > {output_file}'
+    notes: "Google Gemini CLI"
+
+  # 用户自定义示例：
+  # crush:
+  #   cli_path: /opt/homebrew/bin/crush
+  #   model_name: GLM-4.7
+  #   invoke: 'crush chat "{prompt}" > {output_file}'
+  #   notes: "智谱 GLM via Crush CLI"
+```
+
+告知用户：`CLI 配置已保存到 ~/.config/cross-review/models.yaml，后续使用将自动加载，无需重复确认。如需修改，直接编辑该文件或告知我即可。`
+
+#### 2d. 设定模型变量
 
 将确认后的调用方式记录为变量，后续流程统一使用：
 - `MODEL_A_NAME` / `MODEL_A_CMD` — 主模型（即当前执行本 skill 的模型）
 - `MODEL_B_NAME` / `MODEL_B_CMD` — 外部模型 1
 - `MODEL_C_NAME` / `MODEL_C_CMD` — 外部模型 2
+
+> **模型名 → CLI 映射规则**：当用户说"用 GLM-4.7"时，主模型应查阅配置文件中哪个 CLI 对应该模型（如 `crush` 的 `model_name: GLM-4.7`），自动匹配调用方式，无需用户再次说明。
 
 ### Step 3：协作视角分配
 
@@ -132,17 +170,107 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 ### Step 4：创建输出目录
 
-在当前工作目录或项目根目录下创建 `cross-review-records/` 目录（如已存在则复用）。
+在当前工作目录或项目根目录下创建带时间戳的运行目录：
+
+```
+cross-review-records/run-{YYYYMMDD-HHmm}/
+```
+
+如用户在同一任务上重新运行，创建新的 `run-*` 目录，不覆盖历史记录。
 
 ---
 
-## 异常处理原则
+## 输出契约（所有外部模型调用必须遵守）
 
-- 调用外部模型前，建议先做一次简短的连通性测试
-- 如果某个模型在某轮中调用失败或超时，按降级策略减少模型数量继续
-- 主模型应检查外部模型的输出是否为有效内容（非空、非报错信息）
-- 已完成的轮次报告保存在输出目录中，流程中断后可从上次完成的轮次继续
-- 任何降级或异常情况都应明确告知用户
+### 格式约束
+
+所有发给外部模型的 prompt 必须包含以下约束（在 prompt 模板的末尾追加）：
+
+```
+## 输出格式要求
+- 只输出最终分析结果。禁止输出思考过程、命令日志、前言后记。
+- 建议使用下方的输出骨架，但如果任务需要其他结构，可以调整。
+- 简洁优于冗长，但深度优于简洁。宁可分析透彻写 3000 字，也不要为了控制篇幅而省略重要发现。
+```
+
+### 输出骨架（评审类）
+
+```markdown
+## 结论摘要
+[2-3 句话概括核心判断]
+
+## 发现
+### [Critical|Major|Minor]-1：[标题]
+- **证据**：[具体引用位置或段落]
+- **影响**：[不修复会怎样]
+- **建议**：[具体改法]
+
+### [Critical|Major|Minor]-2：[标题]
+...
+
+## 未决问题
+- [不确定但值得关注的点]
+
+## 一句话结论
+[整体判断]
+```
+
+### 输出骨架（设计/创作类）
+
+```markdown
+## 结论摘要
+[2-3 句话概括方案核心]
+
+## 方案
+### 方案要点 1：[标题]
+- **内容**：[具体描述]
+- **决策理由**：[为什么这样选]
+
+### 方案要点 2：[标题]
+...
+
+## 替代方案与权衡
+- [被否决的路径及理由]
+
+## 未决问题
+- [不确定但值得关注的点]
+
+## 一句话结论
+[整体判断]
+```
+
+> Prompt 模板：Read `references/prompt-templates.md` 获取各轮次的完整 prompt 模板。
+
+---
+
+## 输出验证（每次外部模型返回后执行）
+
+### 两层校验
+
+**传输校验**（自动执行，不通过则标记为失败）：
+1. 文件非空且 > 200 字节
+2. 不包含认证/登录关键词（`Opening authentication`、`Do you want to continue`、`Y/n`）
+3. 不包含 ANSI 转义序列或 JSONL 格式噪声
+4. 不包含 CLI 帮助文本（`Usage:`、`--help`）
+
+**语义校验**（自动执行，不通过则标记为低质量）：
+1. 包含至少一个预期标题（`## 结论摘要` 或 `## 发现` 或 `## 方案`）
+2. 包含至少 1 条发现或 1 个方案要点
+3. 包含 `## 一句话结论`
+
+### 失败处理
+
+1. 传输校验失败 → 自动重试一次（使用精简版 prompt）→ 再失败 → 降级（减少该模型）+ 告知用户
+2. 语义校验失败 → 标记为低质量输出，告知用户，但仍纳入后续流程（作为弱信号）
+3. 无效输出保存到 `invalid/` 子目录，不污染主流程文件
+
+---
+
+## Preflight 检查（每轮调用外部模型前执行）
+
+1. 检查 CLI 命令是否存在（`which {cli}`）
+2. 执行最小连通性测试（如 `echo "ping" | codex exec --full-auto --ephemeral --color never` 或等效命令）
+3. 失败 → 立即降级并告知用户，不等待超时
 
 ---
 
@@ -157,7 +285,7 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 > Prompt 模板：Read `references/prompt-templates.md` → "Round 1: Independent Work"
 
-**输出文件：** `cross-review-records/round1-{model_name}.md`
+**输出文件：** `r1.{model_name}.md`
 
 ---
 
@@ -165,16 +293,20 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 **目标：** 每个模型阅读其他模型的 Round 1 输出，进行验证、质疑和补充。主模型最终综合所有输入，产出最终结果。
 
-1. 主模型阅读外部模型的 Round 1 成果，同时调用外部模型做交叉验证
-2. 外部模型完成后，主模型综合所有 Round 1 + Round 2 内容，输出最终结果
+1. 主模型阅读外部模型的 Round 1 成果（已通过 `--output-last-message` 等方式清洗掉元数据噪声）
+2. 将其他模型的 Round 1 clean 输出发送给外部模型做交叉验证
+3. **仅当某个 Round 1 输出超过 5000 字时**，主模型制作 digest 替代原始输出传递，并在 digest 中标注"完整内容见 r1.{model}.md"
+4. 外部模型完成后，主模型综合所有 Round 1 + Round 2 内容，输出最终结果
 
 > Prompt 模板：Read `references/prompt-templates.md` → "Round 2: Cross-Validation"
+
+**快速模式综合要求**：不要简单罗列合并各方观点。必须对分歧点做明确裁决并说明理由，对共识点做简要确认。最终输出应体现综合判断，而非拼接。
 
 **鼓励保留"争议与分歧"部分，记录不同模型的矛盾观点。**
 
 **输出文件：**
-- `cross-review-records/round2-{model_name}.md` — 各模型的交叉验证
-- `cross-review-records/final-output.md` — 最终综合结果
+- `r2.{model_name}.md` — 各模型的交叉验证
+- `final.md` — 最终综合结果
 
 ---
 
@@ -182,41 +314,69 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 ### Round 1-2：与快速模式相同
 
-**输出文件：** `cross-review-records/round{N}-{model_name}.md`
+**输出文件：** `r{N}.{model_name}.md`
 
 ---
 
-### Round 3：方案综合（主模型主导）
+### Round 2.5：焦点反驳（可选，仅在有未解决关键冲突时触发）
 
-**目标：** 综合所有发现，提出最优方案，并明确列出待检验的假设。
+**触发条件：** 主模型在 Round 2 综合时发现以下情况之一：
+- 两个模型在 Critical/Major 级问题上持相反意见且均有论据
+- 某个核心设计决策存在两个以上互斥的合理路径
+- Round 2 各方补充后出现了新的重大分歧
 
-1. 主模型阅读所有 Round 1 + Round 2 输出
+**目标：** 针对性解决关键冲突，不做全面重审。
+
+1. 主模型列出 1-3 个未解决的关键冲突点
+2. 针对每个冲突点，构造一个聚焦的 prompt，要求各模型**只回应该冲突点**
+3. 并行调用外部模型
+
+**输出文件：** `r2.5.{model_name}.md`
+
+---
+
+### Round 3：候选综合（主模型主导）
+
+**目标：** 综合所有发现，提出**候选方案**（非定案），并明确列出待检验的假设和未解冲突。
+
+> **姿态要求**：Round 3 的产出是"候选综合"，不是"最优方案已形成"。措辞上使用"候选""建议""待验证"，避免使用"最终""最优""结论"。
+
+1. 主模型阅读所有 Round 1 + Round 2（+ Round 2.5）输出
 2. 按主题聚类，对每个主题综合各方观点
-3. 提出改进方案或最优方案
-4. **关键步骤**：为每个方案列出"待检验的假设"
-5. 调用外部模型做初步审阅
+3. 提出候选方案
+4. **关键步骤**：为每个方案列出"待检验的假设"和"未解冲突"
+5. 将候选综合发送给外部模型做初步审阅（如文档过长，制作 digest 传递）
 
-> 文档结构模板：Read `references/prompt-templates.md` → "Round 3: Synthesis Document Structure"
+> 文档结构模板：Read `references/prompt-templates.md` → "Round 3: Candidate Synthesis Structure"
 
-**鼓励保留"争议与分歧"部分。**
-
-**输出文件：** `cross-review-records/round3-synthesis.md`
+**输出文件：** `r3.synthesis.md`
 
 ---
 
-### Round 4：对抗性挑战（并行）← 核心轮次
+### Round 4：对抗性挑战（并行，全量检查 + 侧重分配）← 核心轮次
 
-**目标：** 对 Round 3 方案进行对抗性攻击，尝试找出缺陷。前三轮是"完成任务"，Round 4 是"攻击我们自己的成果"。
+**目标：** 对 Round 3 候选方案进行对抗性攻击，尝试找出缺陷。前三轮是"完成任务"，Round 4 是"攻击我们自己的成果"。
 
 1. Read `references/round4-attack-checklist.md` 获取四项强制检查
-2. 指定其中一个外部模型为"魔鬼代言人"角色
-3. 并行调用外部模型进行对抗性挑战
+2. **每个模型都执行全部四项检查**，但通过"侧重分配"确保深度覆盖：
 
-> Prompt 模板：Read `references/prompt-templates.md` → "Round 4: Devil's Advocate" 和 "Round 4: Stress Test"
+| 模型数量 | 侧重分配 |
+|----------|----------|
+| 3 个模型 | 模型 B（魔鬼代言人）→ 重点深入 回环检测 + 共识盲点，快速扫描另两项；模型 C → 重点深入 场景走查 + 去掉它试试，快速扫描另两项；主模型 → 综合复核全部四项 |
+| 2 个模型 | 外部模型（魔鬼代言人）→ 重点深入全部四项；主模型 → 独立做全部四项 + 综合复核 |
+
+3. 并行调用外部模型，每个模型交付全部四项检查结果（侧重项深入分析，非侧重项快速扫描）
+
+> Prompt 模板：Read `references/prompt-templates.md` → "Round 4: Focused Attack"
 
 **输出文件：**
-- `cross-review-records/round4-{model_name}.md` — 各模型的对抗性挑战报告
-- `cross-review-records/final-output.md` — 主模型综合 Round 4 后的最终方案
+- `r4.{model_name}.md` — 各模型的对抗性挑战报告
+- `final.md` — 主模型综合 Round 4 后的最终方案
+
+**Round 4 发现 Critical/Major 级问题时的回路机制：**
+- 发现 Critical → 回到 Round 3b（只重跑受影响主题），产出 `r3b.synthesis.md`，然后重新进入 Round 4
+- 发现 Major → 记录为遗留风险，评估是否需要回路
+- 回路最多执行 1 次，避免无限循环
 
 **最终方案必须包含：**
 - 经过对抗性挑战后保留的方案（及理由）
@@ -229,7 +389,7 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 | 模型数量 | Round 1-2 | Round 3 | Round 4 |
 |----------|-----------|---------|---------|
-| 3 个（最佳） | 各自独立主责视角 | 主模型综合 | 有专门的魔鬼代言人 |
+| 3 个（最佳） | 各自独立主责视角 | 主模型综合 | 按检查项分工 + 魔鬼代言人 |
 | 2 个 | 主模型承担视角 A+C，外部模型承担视角 B | 主模型综合，外部模型审阅 | 外部模型做魔鬼代言人 |
 | 1 个（最低） | 主模型在不同 prompt 中切换主责视角 | 主模型综合 | 用显式对抗性 prompt 做自我攻击 |
 
@@ -237,12 +397,69 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 ## 中间结果管理
 
-- **默认保存**：每轮完成后，将各模型的输出保存到 `cross-review-records/` 目录
-- **保存目的**：
-  - 确保流程中断后可恢复（根据已有文件找回上下文）
-  - 方便用户在过程中随时查看各模型的输出
-  - 作为最终决策的审计依据
-- **结束后处理**：全部完成后，询问用户是否保留中间过程文档，还是只保留最终结果
+### 目录结构
+
+```
+cross-review-records/
+  run-20260323-1640/
+    r1.claude.md          # Round 1 各模型输出
+    r1.codex.md
+    r1.gemini.md
+    r1.digest.md          # （可选）当某输出 >5000 字时的摘要
+    r2.claude.md          # Round 2 各模型输出
+    r2.codex.md
+    r2.5.codex.md         # Round 2.5（如有）
+    r3.synthesis.md       # Round 3 候选综合
+    r4.codex.md           # Round 4 对抗性挑战
+    r4.gemini.md
+    final.md              # 最终方案
+    manifest.json         # 运行元数据
+    invalid/              # 验证失败的输出
+```
+
+### 文件命名规范
+
+**严格格式**：`r{轮次}.{模型名}.md`。禁止自由添加后缀（如 `-ws`、`-session-fix`、`-v2`）。
+
+特殊文件：
+- `r{N}.digest.md` — （可选）当某轮输出 >5000 字时的摘要
+- `r3.synthesis.md` — Round 3 候选综合
+- `r3b.synthesis.md` — Round 4 回路后的修订综合（如有）
+- `final.md` — 最终方案
+- `manifest.json` — 运行元数据
+
+### manifest.json
+
+每次运行开始时创建，每轮完成后更新：
+
+```json
+{
+  "run_id": "run-20260323-1640",
+  "mode": "full",
+  "task_summary": "评审 LightCraft iOS 架构方案",
+  "models": {
+    "lead": "claude",
+    "external": ["codex", "gemini"]
+  },
+  "steps": {
+    "r1": { "status": "completed", "models_completed": ["claude", "codex", "gemini"] },
+    "r2": { "status": "completed", "models_completed": ["claude", "codex"] },
+    "r3": { "status": "completed" },
+    "r4": { "status": "in_progress", "models_completed": ["codex"] }
+  },
+  "retries": { "r1.gemini": 1 },
+  "created_at": "2026-03-23T16:40:00+08:00",
+  "updated_at": "2026-03-23T17:15:00+08:00"
+}
+```
+
+**断点续跑**：如果流程中断，下次启动时检查最近的 `manifest.json`，从上次完成的步骤继续。
+
+### 保存与清理
+
+- **默认保存**：每轮完成后，将各模型的输出保存到运行目录
+- **跨轮传递**：传递给外部模型的上下文使用 clean 输出（已通过 `--output-last-message` 等方式清洗掉元数据噪声）。仅当某个输出超过 5000 字时，主模型制作 digest 替代传递
+- **结束后处理**：全部完成后，询问用户是否保留中间过程文档，还是只保留 `final.md`
 - **用户主动跳过**：如果用户在启动时明确表示不需要保存过程，则只输出最终结果
 
 ---
@@ -251,13 +468,15 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 每轮完成后，主模型自检：
 
-- [ ] 所有输出已保存到 `cross-review-records/`
-- [ ] 文件命名遵循 `round{N}-{model_name}.md` 格式
+- [ ] 所有输出已保存到运行目录
+- [ ] 文件命名遵循 `r{N}.{model_name}.md` 格式
+- [ ] 外部模型输出已通过传输校验和语义校验
 - [ ] 当前轮次的所有模型都已完成（后台任务已返回结果）
 - [ ] 已向用户报告当前轮次的关键发现摘要
+- [ ] `manifest.json` 已更新
 
 全部完成后：
 
-- [ ] `final-output.md` 包含最终方案/结论
+- [ ] `final.md` 包含最终方案/结论
 - [ ] 向用户提供总结和建议的下一步行动
 - [ ] 询问用户是否保留中间过程文档
