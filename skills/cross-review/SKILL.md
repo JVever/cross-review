@@ -72,14 +72,23 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 > **核心原则：模型无关。** 不假设当前主模型是谁，不假设外部模型是谁。
 
-#### 2a. 加载已有配置
+#### 2a. 启动路径选择
 
 首先检查是否存在已保存的 CLI 配置文件 `~/.config/cross-review/models.yaml`：
 
-- **文件存在** → 读取并展示给用户：`已加载 CLI 配置：codex (Codex CLI), gemini (Gemini CLI), crush (GLM-4.7 via Crush CLI)。确认使用这些工具？`
-  - 用户确认 → 直接采用，跳到 Step 2d
-  - 用户要求修改 → 进入 Step 2b
-- **文件不存在** → 进入 Step 2b（首次使用流程）
+**路径 A — 热启动**（配置存在 + healthcheck 通过）：
+1. 读取配置文件
+2. 对每个模型执行配置中记录的 `healthcheck` 命令（纯本地检查，不调用模型，<1 秒完成）
+3. 全部通过 → **非阻塞通知**用户：`已加载 CLI 配置：codex, gemini, crush。如需更换请直接说。`
+4. 直接跳到 Step 2d，不等待用户确认
+
+**路径 B — 冷启动**（配置不存在）：
+- 进入 Step 2b（首次使用的完整引导流程）
+
+**路径 C — 异常回退**（配置存在但 healthcheck 失败 / 用户指定了配置中没有的模型）：
+1. 告知用户哪个 CLI 检查失败
+2. 仅对失败的 CLI 重新引导（不影响其他已通过的 CLI）
+3. 更新配置文件
 
 #### 2b. 检测与确认 CLI 工具
 
@@ -93,10 +102,12 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 | CLI 工具 | 推荐调用格式 |
 |----------|-------------|
 | Codex CLI | `echo "{prompt}" \| codex exec --full-auto --output-last-message {output_file} --color never --ephemeral` |
-| Gemini CLI | `echo "{prompt}" \| gemini -p > {output_file}` |
+| Gemini CLI | `gemini -p "{prompt}" > {output_file}` |
+| Crush CLI | `crush run --quiet "{prompt}" > {output_file}` |
 | 其他工具 | 由用户提供调用格式 |
 
 > **Codex 专用说明**：必须使用 `--output-last-message` 只提取最终回答，避免 session 元数据、thinking blocks、命令日志混入输出。`--ephemeral` 避免留下无用 session 文件。
+> **Crush 专用说明**：使用 `--quiet` 隐藏 spinner，确保输出为纯文本。
 
 #### 2c. 保存 CLI 配置
 
@@ -105,24 +116,29 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 ```yaml
 # cross-review CLI 配置
 # 由 cross-review skill 自动生成，用户可手动编辑
-last_updated: 2026-03-23
+schema_version: 2
+last_updated: 2026-03-25
+last_verified: 2026-03-25T10:00:00+08:00
 
 models:
   codex:
     cli_path: /opt/homebrew/bin/codex
     invoke: 'echo "{prompt}" | codex exec --full-auto --output-last-message {output_file} --color never --ephemeral'
+    healthcheck: 'codex exec --help >/dev/null 2>&1'
     notes: "OpenAI Codex CLI"
 
   gemini:
     cli_path: /opt/homebrew/bin/gemini
     invoke: 'gemini -p "{prompt}" > {output_file}'
+    healthcheck: 'gemini -v >/dev/null 2>&1'
     notes: "Google Gemini CLI"
 
   # 用户自定义示例：
   # crush:
   #   cli_path: /opt/homebrew/bin/crush
   #   model_name: GLM-4.7
-  #   invoke: 'crush chat "{prompt}" > {output_file}'
+  #   invoke: 'crush run --quiet "{prompt}" > {output_file}'
+  #   healthcheck: 'crush models >/dev/null 2>&1'
   #   notes: "智谱 GLM via Crush CLI"
 ```
 
@@ -266,11 +282,21 @@ cross-review-records/run-{YYYYMMDD-HHmm}/
 
 ---
 
-## Preflight 检查（每轮调用外部模型前执行）
+## Preflight 检查（每次 run 启动时执行一次，不按轮次重复）
 
-1. 检查 CLI 命令是否存在（`which {cli}`）
-2. 执行最小连通性测试（如 `echo "ping" | codex exec --full-auto --ephemeral --color never` 或等效命令）
-3. 失败 → 立即降级并告知用户，不等待超时
+Preflight 在 Step 2a 的热启动路径中自动完成。使用**配置文件中记录的 healthcheck 命令**，仅做 CLI 级检查，不调用模型：
+
+| CLI | Healthcheck 命令 | 验证内容 | 耗时 |
+|-----|-----------------|---------|------|
+| Codex | `codex exec --help >/dev/null 2>&1` | CLI + 子命令存在 | <1s |
+| Gemini | `gemini -v >/dev/null 2>&1` | CLI 存在 + 版本可读 | <1s |
+| Crush | `crush models >/dev/null 2>&1` | CLI 存在 + 模型已配置 | <1s |
+
+> **设计原则**：Preflight 只验证"CLI 可执行"。认证和网络问题由首次正式调用 + 输出验证兜底，不在 preflight 中做模型级测试（避免浪费 tokens 和时间）。
+
+- 全部通过 → 进入 Round 1
+- 部分失败 → 仅对失败的 CLI 告知用户并降级，不影响已通过的 CLI
+- 全部失败 → 告知用户，等待指示
 
 ---
 

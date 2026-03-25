@@ -51,12 +51,21 @@ The lead model dynamically assigns focus perspectives based on task type. These 
 
 `~/.config/cross-review/models.yaml`
 
-### Load/Save Flow
+### Three-Path Startup
 
-1. **Start of session**: Check if config file exists
-2. **Exists**: Load and display to user for confirmation
-3. **Not exists**: Run detection (`which` commands), confirm with user, save
-4. **User says "switch to X"**: Update the config and save
+1. **Warm start** (config exists + healthcheck passes): Load config → run `healthcheck` per model → non-blocking notification → proceed to Round 1. No user confirmation needed.
+2. **Cold start** (no config): Run `which` detection → confirm with user → save config.
+3. **Fallback** (config exists but healthcheck fails / user requests new model): Re-guide only for the affected CLI → update config.
+
+### Healthcheck Commands (CLI-level, no model calls)
+
+| CLI | Command | Verifies |
+|-----|---------|----------|
+| Codex | `codex exec --help >/dev/null 2>&1` | CLI + subcommand exist |
+| Gemini | `gemini -v >/dev/null 2>&1` | CLI exists + version readable |
+| Crush | `crush models >/dev/null 2>&1` | CLI exists + models configured |
+
+Auth/network issues are caught by output validation on first real call, not by preflight.
 
 ### Model Name Resolution
 
@@ -79,7 +88,16 @@ When a user references a model by name (e.g., "GLM-4.7"), the lead model should:
 
 ### For Gemini CLI
 
-**Recommended**: Pipe output to file: `gemini -p "{prompt}" > {file}`
+**Recommended**: `gemini -p "{prompt}" > {file}`
+
+Note: `-p` requires the prompt as a string argument. Do NOT use `echo | gemini -p` (leaving `-p` without a value).
+
+### For Crush CLI (GLM)
+
+**Recommended**: `crush run --quiet "{prompt}" > {file}`
+
+- `--quiet`: Hides spinner, ensures clean text output
+- Subcommand is `run`, not `chat`
 
 ### For Other CLIs
 

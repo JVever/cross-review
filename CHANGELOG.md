@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.1.0] - 2026-03-25
+
+### Added
+- Three-path startup: warm start (config + healthcheck → instant), cold start (first-time guide), fallback (partial re-guide)
+- CLI-level healthcheck commands per model in config (`healthcheck` field), verified: `codex exec --help`, `gemini -v`, `crush models`
+- `schema_version` and `last_verified` fields in config for future-proofing
+- Crush CLI section in docs with `--quiet` flag for clean output
+
+### Changed
+- Preflight downgraged from model-level (`echo "ping" | codex exec`) to CLI-level (help/version checks), runs once per session not per round
+- Warm start skips user confirmation — non-blocking notification only
+- Fixed Gemini invoke example: `gemini -p "{prompt}"` (not `echo | gemini -p` which leaves `-p` without a value)
+- Fixed Crush invoke example: `crush run --quiet` (not `crush chat`)
+
+### Fixed
+- Gemini CLI syntax error in SKILL.md that caused 2-3 rounds of trial-and-error on first use
+- Crush CLI subcommand error (`chat` → `run`) in config template
+- Preflight wasting tokens by calling models to respond to "ping"
+
 ## [2.0.0] - 2026-03-23
 
 ### Added
