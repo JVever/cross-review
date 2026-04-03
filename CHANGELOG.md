@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.2.1] - 2026-04-03
+
+### Added
+- Regression coverage for config-driven Gemini model pinning (`model_name` + `-m`)
+
+### Changed
+- Documentation now recommends explicitly pinning Gemini to `gemini-3.1-pro-preview` instead of relying on CLI default routing
+
 ## [2.2.0] - 2026-04-03
 
 ### Added

@@ -104,9 +104,11 @@ The wrapper is responsible for:
 
 ### For Gemini CLI
 
-**Recommended**: `gemini -p "{prompt}" > {file}`
+**Recommended**: `gemini -m gemini-3.1-pro-preview -p "{prompt}" > {file}`
 
-Note: `-p` requires the prompt as a string argument. Do NOT use `echo | gemini -p` (leaving `-p` without a value).
+Notes:
+- `-p` requires the prompt as a string argument. Do NOT use `echo | gemini -p` (leaving `-p` without a value).
+- For Cross Review, prefer pinning Gemini explicitly with `model_name: gemini-3.1-pro-preview` instead of relying on the CLI default model or auto routing.
 
 ### For Crush CLI (GLM)
 

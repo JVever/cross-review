@@ -29,6 +29,18 @@ VALID_MARKDOWN = """## 结论摘要
 包装器可以稳定识别有效输出。
 """
 
+VALID_NUMBERED_MARKDOWN = """## 结论摘要
+这是一份针对语义校验的额外验证输出。它故意不使用三级标题，而是使用编号列表来表达发现，以覆盖 Gemini 这类常见的输出风格。
+内容同样足够长，避免被运输层因为长度不足而误杀，同时确保结构依然清晰可读。
+
+## 发现
+1. 第一条发现通过编号列表呈现，说明校验器不应该把编号列表误判为缺少实质内容。
+2. 第二条发现补充说明：只要标题和条目都在，输出就应被视为合格，而不该强依赖 `###` 或特定加粗字段。
+
+## 一句话结论
+语义校验应接受编号列表形式的有效发现。
+"""
+
 
 def write_executable(path: Path, content: str) -> None:
     path.write_text(textwrap.dedent(content), encoding="utf-8")
@@ -60,6 +72,72 @@ def run_runtime(args, env=None, cwd=None):
 
 
 class CrossReviewRuntimeTests(unittest.TestCase):
+    def test_gemini_uses_model_name_from_config_when_present(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            fake_gemini = temp / "fake_gemini.py"
+            prompt_file = temp / "prompt.md"
+            config_path = temp / "models.yaml"
+            registry_path = temp / "registry.json"
+            run_dir = temp / "run-20260403-2200"
+            prompt_file.write_text("请给出结构化评审结果。", encoding="utf-8")
+
+            write_executable(
+                fake_gemini,
+                f"""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+if "-v" in sys.argv or "--version" in sys.argv:
+    print("0.35.3")
+    raise SystemExit(0)
+
+Path({str((temp / "argv.json"))!r}).write_text(json.dumps(sys.argv), encoding="utf-8")
+print({VALID_MARKDOWN!r})
+""",
+            )
+
+            write_config(
+                config_path,
+                {
+                    "gemini": {
+                        "cli_path": str(fake_gemini),
+                        "model_name": "gemini-3.1-pro-preview",
+                        "invoke": 'gemini -m gemini-3.1-pro-preview -p "{prompt}" > {output_file}',
+                        "healthcheck": "gemini -v >/dev/null 2>&1",
+                        "notes": "Fake Gemini",
+                    }
+                },
+            )
+
+            result = run_runtime(
+                [
+                    "execute",
+                    "--config",
+                    str(config_path),
+                    "--registry",
+                    str(registry_path),
+                    "--run-dir",
+                    str(run_dir),
+                    "--call-id",
+                    "r1.gemini",
+                    "--model",
+                    "gemini",
+                    "--prompt-file",
+                    str(prompt_file),
+                    "--output-file",
+                    "r1.gemini.md",
+                ]
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+            call = status["calls"]["r1.gemini"]
+            self.assertEqual(call["requested_model"], "gemini-3.1-pro-preview")
+            self.assertEqual(call["resolved_model"], "gemini-3.1-pro-preview")
+            self.assertEqual(call["attempts"][0]["command"][1:3], ["-m", "gemini-3.1-pro-preview"])
+
     def test_execute_success_writes_status_logs_and_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -138,6 +216,68 @@ print({VALID_MARKDOWN!r})
             self.assertTrue((run_dir / call["attempts"][0]["stdout_path"]).exists())
             self.assertTrue((run_dir / call["attempts"][0]["stderr_path"]).exists())
             self.assertEqual(call["validation"]["transport"]["passed"], True)
+            self.assertEqual(call["validation"]["semantic"]["passed"], True)
+
+    def test_semantic_validation_accepts_numbered_findings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            fake_gemini = temp / "fake_gemini.py"
+            prompt_file = temp / "prompt.md"
+            config_path = temp / "models.yaml"
+            registry_path = temp / "registry.json"
+            run_dir = temp / "run-20260403-2201"
+            prompt_file.write_text("请给出结构化评审结果。", encoding="utf-8")
+
+            write_executable(
+                fake_gemini,
+                f"""#!/usr/bin/env python3
+import sys
+
+if "-v" in sys.argv or "--version" in sys.argv:
+    print("0.35.3")
+    raise SystemExit(0)
+
+print({VALID_NUMBERED_MARKDOWN!r})
+""",
+            )
+
+            write_config(
+                config_path,
+                {
+                    "gemini": {
+                        "cli_path": str(fake_gemini),
+                        "model_name": "gemini-3.1-pro-preview",
+                        "invoke": 'gemini -m gemini-3.1-pro-preview -p "{prompt}" > {output_file}',
+                        "healthcheck": "gemini -v >/dev/null 2>&1",
+                        "notes": "Fake Gemini",
+                    }
+                },
+            )
+
+            result = run_runtime(
+                [
+                    "execute",
+                    "--config",
+                    str(config_path),
+                    "--registry",
+                    str(registry_path),
+                    "--run-dir",
+                    str(run_dir),
+                    "--call-id",
+                    "r1.gemini",
+                    "--model",
+                    "gemini",
+                    "--prompt-file",
+                    str(prompt_file),
+                    "--output-file",
+                    "r1.gemini.md",
+                ]
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+            call = status["calls"]["r1.gemini"]
+            self.assertEqual(call["final_status"], "succeeded")
             self.assertEqual(call["validation"]["semantic"]["passed"], True)
 
     def test_execute_failure_creates_invalid_artifacts_and_records_retry(self):

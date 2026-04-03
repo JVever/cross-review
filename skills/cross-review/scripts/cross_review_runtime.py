@@ -524,7 +524,10 @@ def validate_semantic(output_text: str) -> Dict:
         issues.append("missing_expected_heading")
     if "## 一句话结论" not in output_text:
         issues.append("missing_one_line_conclusion")
-    if "###" not in output_text and "- **证据**" not in output_text and "- **内容**" not in output_text:
+    has_structured_items = bool(
+        re.search(r"(?m)^(?:###\s+|\d+\.\s+|- \*\*证据\*\*|- \*\*内容\*\*|- )", output_text)
+    )
+    if not has_structured_items:
         issues.append("missing_substance_markers")
     return {
         "passed": not issues,

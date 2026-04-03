@@ -90,6 +90,7 @@ cross review this architecture design with Codex
 | **Warm start** | CLI config persisted across sessions; sub-second healthcheck; no repeated setup |
 | **Structured runtime wrapper** | Every external call can emit `status.json`, `logs/`, and `invalid/` artifacts with stdout/stderr, exit code, duration, retries, and validation results |
 | **Learnable model registry** | `~/.config/cross-review/registry.json` remembers verified model paths and refreshes when catalog data gets stale or a CLI version changes |
+| **Explicit Gemini pinning** | Set `model_name: gemini-3.1-pro-preview` and include `-m gemini-3.1-pro-preview` in the config to avoid unexpected CLI auto-routing |
 | **Output quality control** | Suggested output skeleton + two-layer validation (transport + semantic) |
 | **Clean outputs** | Codex: `--output-last-message` strips noise; Crush: `--quiet` hides spinner |
 | **Graceful degradation** | Adapts from 3 models → 2 → 1 with adjusted strategies |

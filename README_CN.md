@@ -90,6 +90,7 @@ ln -s "$(pwd)/cross-review/skills/cross-review" ~/.claude/skills/cross-review
 | **秒级热启动** | CLI 配置跨会话持久化；亚秒级健康检查；无需重复设置 |
 | **结构化运行层** | 每次外部调用都可以产出 `status.json`、`logs/`、`invalid/`，记录 stdout/stderr、退出码、耗时、重试和校验结果 |
 | **可学习模型记忆** | `~/.config/cross-review/registry.json` 记录已验证的模型路径，并在 catalog 过期或 CLI 版本变化时自动刷新 |
+| **显式锁定 Gemini** | 在配置里写 `model_name: gemini-3.1-pro-preview`，并在调用中显式传 `-m gemini-3.1-pro-preview`，避免 CLI 自动路由带来的模型漂移 |
 | **输出质量控制** | 建议输出骨架 + 两层验证（传输校验 + 语义校验） |
 | **Clean 输出** | Codex: `--output-last-message` 去噪；Crush: `--quiet` 隐藏 spinner |
 | **优雅降级** | 从 3 个模型 → 2 → 1，自动调整策略 |

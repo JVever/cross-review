@@ -130,9 +130,10 @@ models:
 
   gemini:
     cli_path: /opt/homebrew/bin/gemini
-    invoke: 'gemini -p "{prompt}" > {output_file}'
+    model_name: gemini-3.1-pro-preview
+    invoke: 'gemini -m gemini-3.1-pro-preview -p "{prompt}" > {output_file}'
     healthcheck: 'gemini -v >/dev/null 2>&1'
-    notes: "Google Gemini CLI"
+    notes: "Google Gemini CLI pinned to Gemini 3.1 Pro Preview"
 
   # 用户自定义示例：
   # crush:
@@ -153,7 +154,7 @@ models:
 - `MODEL_B_NAME` / `MODEL_B_CMD` — 外部模型 1
 - `MODEL_C_NAME` / `MODEL_C_CMD` — 外部模型 2
 
-> **模型名 → CLI 映射规则**：当用户说"用 GLM-5.1"或"用 GLM5.1"时，主模型应先查阅配置文件中哪个 CLI 对应该模型（如 `crush`），再查阅 `registry.json` 中最近一次验证成功的 canonical target（如 `zai/glm-5.1`）。只有在记忆缺失、catalog 过期或 CLI 版本变化时，才重新探测并更新记忆。
+> **模型名 → CLI 映射规则**：当用户说"用 GLM-5.1"或"用 GLM5.1"时，主模型应先查阅配置文件中哪个 CLI 对应该模型（如 `crush`），再查阅 `registry.json` 中最近一次验证成功的 canonical target（如 `zai/glm-5.1`）。只有在记忆缺失、catalog 过期或 CLI 版本变化时，才重新探测并更新记忆。Gemini 这类已有稳定目标模型的 CLI，优先在 `models.yaml` 里显式写 `model_name` 并通过 `-m` 锁定，避免 CLI 默认 routing 把请求切到其他模型。
 
 ### Step 3：协作视角分配
 
