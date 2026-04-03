@@ -74,13 +74,14 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 #### 2a. 启动路径选择
 
-首先检查是否存在已保存的 CLI 配置文件 `~/.config/cross-review/models.yaml`：
+首先检查是否存在已保存的 CLI 配置文件 `~/.config/cross-review/models.yaml`。如存在 `~/.config/cross-review/registry.json`，一并读取其中的运行时记忆（已验证模型路径、CLI 版本、catalog 刷新时间）：
 
 **路径 A — 热启动**（配置存在 + healthcheck 通过）：
 1. 读取配置文件
 2. 对每个模型执行配置中记录的 `healthcheck` 命令（纯本地检查，不调用模型，<1 秒完成）
-3. 全部通过 → **非阻塞通知**用户：`已加载 CLI 配置：codex, gemini, crush。如需更换请直接说。`
-4. 直接跳到 Step 2d，不等待用户确认
+3. 如果某个 CLI 的版本发生变化，或 registry 中的模型 catalog 已过期，则刷新对应的运行时记忆
+4. 全部通过 → **非阻塞通知**用户：`已加载 CLI 配置：codex, gemini, crush。如需更换请直接说。`
+5. 直接跳到 Step 2d，不等待用户确认
 
 **路径 B — 冷启动**（配置不存在）：
 - 进入 Step 2b（首次使用的完整引导流程）
@@ -101,17 +102,17 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 
 | CLI 工具 | 推荐调用格式 |
 |----------|-------------|
-| Codex CLI | `echo "{prompt}" \| codex exec --full-auto --output-last-message {output_file} --color never --ephemeral` |
-| Gemini CLI | `gemini -p "{prompt}" > {output_file}` |
-| Crush CLI | `crush run --quiet "{prompt}" > {output_file}` |
-| 其他工具 | 由用户提供调用格式 |
+| Codex CLI | 由 `scripts/cross_review_runtime.py execute --model codex` 统一封装 |
+| Gemini CLI | 由 `scripts/cross_review_runtime.py execute --model gemini` 统一封装 |
+| Crush CLI | 由 `scripts/cross_review_runtime.py execute --model crush --requested-model <alias>` 统一封装 |
+| 其他工具 | 由用户提供调用格式，必要时通过 `invoke` 模板兜底 |
 
 > **Codex 专用说明**：必须使用 `--output-last-message` 只提取最终回答，避免 session 元数据、thinking blocks、命令日志混入输出。`--ephemeral` 避免留下无用 session 文件。
 > **Crush 专用说明**：使用 `--quiet` 隐藏 spinner，确保输出为纯文本。
 
 #### 2c. 保存 CLI 配置
 
-将确认后的配置保存到 `~/.config/cross-review/models.yaml`：
+将确认后的配置保存到 `~/.config/cross-review/models.yaml`。运行时记忆单独保存在 `~/.config/cross-review/registry.json`，用于记录 canonical model path、CLI 版本和 catalog 刷新结果：
 
 ```yaml
 # cross-review CLI 配置
@@ -137,12 +138,13 @@ models:
   # crush:
   #   cli_path: /opt/homebrew/bin/crush
   #   model_name: GLM-4.7
+  #   catalog: 'crush models'
   #   invoke: 'crush run --quiet "{prompt}" > {output_file}'
   #   healthcheck: 'crush models >/dev/null 2>&1'
   #   notes: "智谱 GLM via Crush CLI"
 ```
 
-告知用户：`CLI 配置已保存到 ~/.config/cross-review/models.yaml，后续使用将自动加载，无需重复确认。如需修改，直接编辑该文件或告知我即可。`
+告知用户：`CLI 配置已保存到 ~/.config/cross-review/models.yaml，运行时记忆会保存到 ~/.config/cross-review/registry.json。后续使用将自动加载，无需重复确认。如需修改，直接编辑该文件或告知我即可。`
 
 #### 2d. 设定模型变量
 
@@ -151,7 +153,7 @@ models:
 - `MODEL_B_NAME` / `MODEL_B_CMD` — 外部模型 1
 - `MODEL_C_NAME` / `MODEL_C_CMD` — 外部模型 2
 
-> **模型名 → CLI 映射规则**：当用户说"用 GLM-4.7"时，主模型应查阅配置文件中哪个 CLI 对应该模型（如 `crush` 的 `model_name: GLM-4.7`），自动匹配调用方式，无需用户再次说明。
+> **模型名 → CLI 映射规则**：当用户说"用 GLM-5.1"或"用 GLM5.1"时，主模型应先查阅配置文件中哪个 CLI 对应该模型（如 `crush`），再查阅 `registry.json` 中最近一次验证成功的 canonical target（如 `zai/glm-5.1`）。只有在记忆缺失、catalog 过期或 CLI 版本变化时，才重新探测并更新记忆。
 
 ### Step 3：协作视角分配
 
@@ -261,6 +263,8 @@ cross-review-records/run-{YYYYMMDD-HHmm}/
 
 ## 输出验证（每次外部模型返回后执行）
 
+> **实现方式**：优先使用 `scripts/cross_review_runtime.py` 的 `execute` 子命令统一执行外部模型调用。该运行层负责记录 stdout、stderr、退出码、耗时、重试次数、校验结果，并强制生成 `status.json`、`logs/`、`invalid/`。
+
 ### 两层校验
 
 **传输校验**（自动执行，不通过则标记为失败）：
@@ -278,13 +282,13 @@ cross-review-records/run-{YYYYMMDD-HHmm}/
 
 1. 传输校验失败 → 自动重试一次（使用精简版 prompt）→ 再失败 → 降级（减少该模型）+ 告知用户
 2. 语义校验失败 → 标记为低质量输出，告知用户，但仍纳入后续流程（作为弱信号）
-3. 无效输出保存到 `invalid/` 子目录，不污染主流程文件
+3. 无效输出保存到 `invalid/` 子目录，不污染主流程文件；stdout/stderr 原始证据保存在 `logs/` 中
 
 ---
 
 ## Preflight 检查（每次 run 启动时执行一次，不按轮次重复）
 
-Preflight 在 Step 2a 的热启动路径中自动完成。使用**配置文件中记录的 healthcheck 命令**，仅做 CLI 级检查，不调用模型：
+Preflight 在 Step 2a 的热启动路径中自动完成。使用**配置文件中记录的 healthcheck 命令**，仅做 CLI 级检查，不调用模型；CLI 版本变化和 catalog 过期仅触发 registry 刷新，不直接判定模型不可用：
 
 | CLI | Healthcheck 命令 | 验证内容 | 耗时 |
 |-----|-----------------|---------|------|
@@ -428,6 +432,8 @@ Preflight 在 Step 2a 的热启动路径中自动完成。使用**配置文件�
 ```
 cross-review-records/
   run-20260323-1640/
+    status.json           # 每次外部调用的结构化状态
+    logs/                 # stdout / stderr / attempt output
     r1.claude.md          # Round 1 各模型输出
     r1.codex.md
     r1.gemini.md
@@ -448,6 +454,7 @@ cross-review-records/
 **严格格式**：`r{轮次}.{模型名}.md`。禁止自由添加后缀（如 `-ws`、`-session-fix`、`-v2`）。
 
 特殊文件：
+- `status.json` — 外部调用状态、重试和校验记录
 - `r{N}.digest.md` — （可选）当某轮输出 >5000 字时的摘要
 - `r3.synthesis.md` — Round 3 候选综合
 - `r3b.synthesis.md` — Round 4 回路后的修订综合（如有）

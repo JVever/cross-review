@@ -51,9 +51,13 @@ The lead model dynamically assigns focus perspectives based on task type. These 
 
 `~/.config/cross-review/models.yaml`
 
+Runtime memory lives in:
+
+`~/.config/cross-review/registry.json`
+
 ### Three-Path Startup
 
-1. **Warm start** (config exists + healthcheck passes): Load config → run `healthcheck` per model → non-blocking notification → proceed to Round 1. No user confirmation needed.
+1. **Warm start** (config exists + healthcheck passes): Load config → run `healthcheck` per model → refresh registry if catalog is stale or CLI version changed → non-blocking notification → proceed to Round 1. No user confirmation needed.
 2. **Cold start** (no config): Run `which` detection → confirm with user → save config.
 3. **Fallback** (config exists but healthcheck fails / user requests new model): Re-guide only for the affected CLI → update config.
 
@@ -69,14 +73,26 @@ Auth/network issues are caught by output validation on first real call, not by p
 
 ### Model Name Resolution
 
-When a user references a model by name (e.g., "GLM-4.7"), the lead model should:
-1. Check config for a CLI with matching `model_name` field
-2. If found, use that CLI's `invoke` command
-3. If not found, ask user which CLI to use for that model, then save the mapping
+When a user references a model by name (e.g., "GLM-5.1"), the lead model should:
+1. Check config for a CLI with matching `model_name` field or known provider (for example `crush`)
+2. Check `registry.json` for the most recently verified canonical target (for example `zai/glm-5.1`)
+3. Only if the registry has no verified target, or the catalog/version is stale, refresh the catalog and learn a new canonical target
+4. If no CLI can be matched, ask the user which CLI to use for that model, then save the mapping
 
 ---
 
 ## Output Contract Enforcement
+
+### Runtime Wrapper
+
+Prefer `scripts/cross_review_runtime.py execute` for every external model call.
+
+The wrapper is responsible for:
+- Capturing stdout and stderr
+- Recording exit code, duration, retries, and validation result
+- Writing `status.json` and `logs/`
+- Saving failed artifacts under `invalid/`
+- Reusing and updating `registry.json` for model resolution
 
 ### For Codex CLI
 
@@ -169,6 +185,8 @@ cross-review-records/
     r3b.synthesis.md      # Round 3b revision (if Round 4 found Critical)
     r4.{model}.attack.md  # Round 4 attack reports
     final.md              # Final output
+    status.json           # Structured wrapper status
+    logs/                 # stdout / stderr / attempt outputs
     manifest.json         # Run metadata & checkpoint
     invalid/              # Failed validation outputs
 ```

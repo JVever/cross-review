@@ -88,6 +88,8 @@ cross review this architecture design with Codex
 |---------|-------------|
 | **Model-agnostic** | Works with any AI CLI: Codex, Gemini, Crush (GLM), Claude Code, and more |
 | **Warm start** | CLI config persisted across sessions; sub-second healthcheck; no repeated setup |
+| **Structured runtime wrapper** | Every external call can emit `status.json`, `logs/`, and `invalid/` artifacts with stdout/stderr, exit code, duration, retries, and validation results |
+| **Learnable model registry** | `~/.config/cross-review/registry.json` remembers verified model paths and refreshes when catalog data gets stale or a CLI version changes |
 | **Output quality control** | Suggested output skeleton + two-layer validation (transport + semantic) |
 | **Clean outputs** | Codex: `--output-last-message` strips noise; Crush: `--quiet` hides spinner |
 | **Graceful degradation** | Adapts from 3 models → 2 → 1 with adjusted strategies |
@@ -100,10 +102,14 @@ cross review this architecture design with Codex
 ```
 skills/cross-review/
   SKILL.md                                  Core workflow and instructions
+  scripts/
+    cross_review_runtime.py                 Runtime wrapper for external CLI execution and model resolution
   references/
     prompt-templates.md                     Prompt templates for all rounds
     round4-attack-checklist.md              4 mandatory adversarial checks (detailed)
     evaluation-and-strategies.md            Perspectives, degradation, validation rules
+tests/
+  test_cross_review_runtime.py              Regression tests for wrapper logging and registry learning
 ```
 
 ## Requirements

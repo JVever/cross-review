@@ -88,6 +88,8 @@ ln -s "$(pwd)/cross-review/skills/cross-review" ~/.claude/skills/cross-review
 |------|------|
 | **模型无关** | 适配任意 AI CLI：Codex、Gemini、Crush (GLM)、Claude Code 等 |
 | **秒级热启动** | CLI 配置跨会话持久化；亚秒级健康检查；无需重复设置 |
+| **结构化运行层** | 每次外部调用都可以产出 `status.json`、`logs/`、`invalid/`，记录 stdout/stderr、退出码、耗时、重试和校验结果 |
+| **可学习模型记忆** | `~/.config/cross-review/registry.json` 记录已验证的模型路径，并在 catalog 过期或 CLI 版本变化时自动刷新 |
 | **输出质量控制** | 建议输出骨架 + 两层验证（传输校验 + 语义校验） |
 | **Clean 输出** | Codex: `--output-last-message` 去噪；Crush: `--quiet` 隐藏 spinner |
 | **优雅降级** | 从 3 个模型 → 2 → 1，自动调整策略 |
@@ -100,10 +102,14 @@ ln -s "$(pwd)/cross-review/skills/cross-review" ~/.claude/skills/cross-review
 ```
 skills/cross-review/
   SKILL.md                                  核心工作流和指令
+  scripts/
+    cross_review_runtime.py                 外部 CLI 执行包装器与模型解析器
   references/
     prompt-templates.md                     各轮次的 Prompt 模板
     round4-attack-checklist.md              4 项强制对抗性检查（详细操作指南）
     evaluation-and-strategies.md            视角分配、降级策略、验证规则
+tests/
+  test_cross_review_runtime.py              包装器与 registry 学习逻辑的回归测试
 ```
 
 ## 环境要求

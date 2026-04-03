@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.0] - 2026-04-03
+
+### Added
+- `skills/cross-review/scripts/cross_review_runtime.py` as a structured runtime wrapper for external model calls
+- `status.json` per run with stdout/stderr log paths, exit code, duration, retries, resolved model, and validation summaries
+- `~/.config/cross-review/registry.json` as learnable model memory for canonical model resolution
+- Regression tests covering success, failed validation capture, canonical target learning, and version-triggered registry refresh
+
+### Changed
+- Crush model discovery now prefers the configured `cli_path` adapter over shell-level catalog commands
+- Model alias resolution now reuses remembered successful targets and refreshes when catalog data gets stale or CLI versions drift
+- Failure handling now preserves invalid outputs and stderr evidence instead of relying on silent redirection
+
 ## [2.1.0] - 2026-03-25
 
 ### Added
