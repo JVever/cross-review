@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -569,6 +570,246 @@ raise SystemExit(0)
             second_payload = json.loads(second.stdout)
             self.assertEqual(second_payload["refresh_reason"], "version_changed")
             self.assertEqual(second_payload["resolved_model"], "zai/glm-5.2")
+
+
+VALID_FINAL_MD = """---
+task: "修复 im2cc update 的 dirty tree 问题"
+mode: "full"
+task_type: "design"
+models:
+  lead: "claude"
+  external: ["codex", "crush"]
+run_id: "run-20260415-1535"
+created_at: "2026-04-15T15:35:00+08:00"
+status: "active"
+supersedes: null
+superseded_by: null
+success_criteria: "让 im2cc update 在 dirty tree 上也能完成，且用户改动可恢复"
+synthesis_bias_note: null
+independent_review: "pass"
+---
+
+# im2cc update — Dirty Tree 处理方案
+
+## TL;DR
+目标是修复 im2cc update 命令在 dirty tree 下失败的问题。最终决策：先备份到 repo 外，再确定性覆盖。下一步立即执行 P0-1 到 P0-5。核心取舍：采纳轻量备份方案，拒绝 SRE 化 staging。
+
+## 1. 任务与约束
+- **目标**：让 im2cc update 在 dirty tree 上可完成
+- **关键约束**：
+  - 不丢失用户改动
+  - 命令可被 AI 调用（非交互）
+- **成功标准**：普通用户永远 update 成功，开发者不丢工作
+
+## 2. 核心分歧与裁决
+
+| # | 议题 | claude | codex | crush | 裁决 | 依据 |
+|---|------|--------|-------|-------|------|------|
+| D1 | 备份位置 | git stash | repo 外完整备份 | repo 外轻量 manifest | **repo 外** | stash 绑定 .git，不安全 |
+
+## 3. 最终方案
+
+### 决策 1：用 preserveLocalChanges 替换 ensureCleanGitCheckout
+- **做什么**：新增函数，签名为 (root, isGitCheckout) => SaveResult
+- **为什么**：消除 git 路径和 tarball 路径的不对称
+- **来源**：R3 候选 #1
+
+## 4. 被否决的替代路径
+- **路径 git stash**（claude）：stash 绑定 .git，update 时会被破坏 → 否决理由：不安全
+
+## 5. 行动项
+
+### P0 — 立即执行
+- [ ] **P0-1** 实现 preserveLocalChanges
+  - 文件：src/upgrade.ts
+  - 依赖：无
+  - 来源：决策 1
+- [ ] **P0-2** 修改 cmdUpdate 调用新函数
+  - 文件：bin/im2cc.ts
+  - 依赖：P0-1
+  - 来源：决策 1
+
+## 6. 遗留风险与未决问题
+- **风险 R1**：fork-remote 检测精度 — 缓解方式：正则匹配
+
+## 7. 附录：讨论脉络
+<details>
+<summary>展开</summary>
+详细脉络见 r1/r2/r3/r4 各模型输出。
+</details>
+"""
+
+
+INVALID_FINAL_MD_NO_FRONTMATTER = """# 没有 frontmatter 的文档
+
+## TL;DR
+这份文档缺少 frontmatter。它只有正文，不符合强模板。
+
+## 1. 任务与约束
+...
+
+## 2. 核心分歧与裁决
+无
+
+## 3. 最终方案
+### 决策 1: 不重要
+"""
+
+
+class FinalMdValidationTests(unittest.TestCase):
+    def test_valid_final_md_passes_all_checks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            final_md = Path(temp_dir) / "final.md"
+            final_md.write_text(VALID_FINAL_MD, encoding="utf-8")
+            result = run_runtime(["check-final", "--file", str(final_md)])
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["passed"], payload)
+            for name, check in payload["checks"].items():
+                self.assertTrue(check["passed"], f"{name} failed: {check}")
+
+    def test_missing_frontmatter_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            final_md = Path(temp_dir) / "final.md"
+            final_md.write_text(INVALID_FINAL_MD_NO_FRONTMATTER, encoding="utf-8")
+            result = run_runtime(["check-final", "--file", str(final_md)])
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["passed"])
+            self.assertFalse(payload["checks"]["frontmatter_fields"]["passed"])
+            self.assertEqual(
+                set(payload["checks"]["frontmatter_fields"]["missing"]),
+                {"task", "mode", "task_type", "models", "run_id", "created_at", "status", "success_criteria"},
+            )
+
+    def test_missing_decision_field_fails(self):
+        broken = VALID_FINAL_MD.replace(
+            "- **做什么**：新增函数，签名为 (root, isGitCheckout) => SaveResult\n", ""
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            final_md = Path(temp_dir) / "final.md"
+            final_md.write_text(broken, encoding="utf-8")
+            result = run_runtime(["check-final", "--file", str(final_md)])
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["checks"]["decision_fields"]["passed"])
+            self.assertTrue(
+                any("做什么" in issue for issue in payload["checks"]["decision_fields"]["issues"])
+            )
+
+    def test_tldr_too_short_fails(self):
+        broken = VALID_FINAL_MD.replace(
+            "## TL;DR\n目标是修复 im2cc update 命令在 dirty tree 下失败的问题。最终决策：先备份到 repo 外，再确定性覆盖。下一步立即执行 P0-1 到 P0-5。核心取舍：采纳轻量备份方案，拒绝 SRE 化 staging。",
+            "## TL;DR\n太短了。",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            final_md = Path(temp_dir) / "final.md"
+            final_md.write_text(broken, encoding="utf-8")
+            result = run_runtime(["check-final", "--file", str(final_md)])
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["checks"]["tldr_sufficient"]["passed"])
+            self.assertLess(payload["checks"]["tldr_sufficient"]["sentence_count"], 3)
+
+    def test_no_p0_actions_fails(self):
+        broken = re.sub(
+            r"### P0 — 立即执行\n.*?(?=\n## 6\.)",
+            "### P0 — 立即执行\n\n（待补）\n",
+            VALID_FINAL_MD,
+            flags=re.DOTALL,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            final_md = Path(temp_dir) / "final.md"
+            final_md.write_text(broken, encoding="utf-8")
+            result = run_runtime(["check-final", "--file", str(final_md)])
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["checks"]["p0_actions"]["passed"])
+            self.assertEqual(payload["checks"]["p0_actions"]["count"], 0)
+
+
+class ArchiveLegacyTests(unittest.TestCase):
+    def test_archives_non_run_files_and_skips_run_dirs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            records = Path(temp_dir) / "cross-review-records"
+            records.mkdir()
+            # legacy files
+            (records / "final-output-ws.md").write_text("old", encoding="utf-8")
+            (records / "round1-claude.md").write_text("old", encoding="utf-8")
+            # modern run dir
+            run_dir = records / "run-20260415-1535"
+            run_dir.mkdir()
+            (run_dir / "final.md").write_text("modern", encoding="utf-8")
+            # current.md pointer should be preserved
+            (records / "current.md").write_text("run-20260415-1535/final.md\n", encoding="utf-8")
+
+            result = run_runtime(["archive-legacy", "--dir", str(records)])
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            payload = json.loads(result.stdout)
+            self.assertEqual(len(payload["moved"]), 2)
+            self.assertTrue((records / "_archive" / "final-output-ws.md").exists())
+            self.assertTrue((records / "_archive" / "round1-claude.md").exists())
+            # run dir untouched
+            self.assertTrue((records / "run-20260415-1535" / "final.md").exists())
+            # current.md untouched
+            self.assertTrue((records / "current.md").exists())
+
+
+class SupersedesTests(unittest.TestCase):
+    def test_mark_superseded_updates_both_files_and_writes_pointer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            records = Path(temp_dir) / "cross-review-records"
+            old_run = records / "run-20260410-0915"
+            new_run = records / "run-20260415-1535"
+            old_run.mkdir(parents=True)
+            new_run.mkdir(parents=True)
+            old_final = old_run / "final.md"
+            new_final = new_run / "final.md"
+            old_final.write_text(VALID_FINAL_MD.replace('run_id: "run-20260415-1535"', 'run_id: "run-20260410-0915"'), encoding="utf-8")
+            new_final.write_text(VALID_FINAL_MD, encoding="utf-8")
+
+            result = run_runtime([
+                "mark-superseded",
+                "--records-dir", str(records),
+                "--old", "run-20260410-0915",
+                "--new", "run-20260415-1535",
+            ])
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+            old_text = old_final.read_text(encoding="utf-8")
+            self.assertIn('status: "superseded"', old_text)
+            self.assertIn('superseded_by: "run-20260415-1535"', old_text)
+            self.assertIn("本 run 已被 run-20260415-1535 取代", old_text)
+
+            new_text = new_final.read_text(encoding="utf-8")
+            self.assertIn('supersedes: "run-20260410-0915"', new_text)
+
+            pointer = records / "current.md"
+            self.assertTrue(pointer.exists())
+            self.assertIn("run-20260415-1535/final.md", pointer.read_text(encoding="utf-8"))
+
+
+class RunInitTests(unittest.TestCase):
+    def test_run_init_reports_archived_and_active_runs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            records = Path(temp_dir) / "cross-review-records"
+            records.mkdir()
+            (records / "old-format.md").write_text("legacy", encoding="utf-8")
+            active_run = records / "run-20260415-1535"
+            active_run.mkdir()
+            (active_run / "final.md").write_text(VALID_FINAL_MD, encoding="utf-8")
+            superseded_run = records / "run-20260410-0915"
+            superseded_run.mkdir()
+            superseded_fm = VALID_FINAL_MD.replace('status: "active"', 'status: "superseded"')
+            (superseded_run / "final.md").write_text(superseded_fm, encoding="utf-8")
+
+            result = run_runtime(["run-init", "--dir", str(records)])
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            payload = json.loads(result.stdout)
+            self.assertEqual(len(payload["archived"]["moved"]), 1)
+            active_ids = [r["run_id"] for r in payload["active_runs"]]
+            self.assertIn("run-20260415-1535", active_ids)
+            self.assertNotIn("run-20260410-0915", active_ids)
 
 
 if __name__ == "__main__":

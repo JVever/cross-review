@@ -5,6 +5,9 @@
 cross-review-records/
 review-records/
 
+# Local design scratch (not part of the skill)
+tmp-design/
+
 # Editor
 *.swp
 *.swo

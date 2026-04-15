@@ -15,16 +15,26 @@ Single-model reviews have a fundamental limit: one set of training data, one set
 ## How It Works
 
 ```
-Round 1  Independent Work      Each model analyzes from its assigned perspective     (parallel)
-Round 2  Cross-Validation      Models review each other's findings, flag conflicts   (parallel)
-Round 2.5 Focused Rebuttal     Resolve critical conflicts before synthesis           (optional)
-Round 3  Candidate Synthesis   Lead model proposes candidates + assumption ledger    (lead model)
-Round 4  Adversarial Attack    All models stress-test with emphasis assignments      (parallel)
+Step 1    Task Alignment Card   Lead model drafts goal/constraints/success criteria   (non-blocking)
+Round 1   Independent Work      Each model analyzes (with success_criteria injected)  (parallel)
+Round 2   Cross-Validation      Models review each other's findings                   (parallel)
+Round 2.5 30s Devil's Advocate  (quick mode) Break consensus bias in one attack       (parallel)
+          Focused Rebuttal      (full mode) Resolve critical conflicts                (parallel)
+Round 3   Candidate Synthesis   (full mode) Lead model proposes candidates            (lead model)
+Round 4   Adversarial Attack    (full mode) All models stress-test                    (parallel)
+Round 5   final.md + Review     Lead compiles final.md; external model validates      (compile + review)
 ```
 
 **Two modes:**
-- **Quick mode** (2 rounds) — multi-perspective review without deep adversarial testing
-- **Full mode** (4 rounds, with optional 2.5) — complete cross-validation + adversarial stress test
+- **Quick mode** (2 rounds + 30s attack + independent review) — multi-perspective with lightweight adversarial check
+- **Full mode** (4 rounds + R3 synthesis + independent review) — complete cross-validation + adversarial stress test
+
+### Deliverable contract: `final.md` is a **compiled artifact**, not free-form prose
+
+- Hard-templated: 8 frontmatter fields + 8 body sections + 8 self-check rules
+- Must pass `scripts/cross_review_runtime.py check-final --file final.md` before delivery
+- External model does an independent "is it self-contained?" review; if fail, lead must rework
+- Users read `final.md` and get three things without asking follow-up questions: **decisions, actions, traceability**
 
 **Round 4's four mandatory stress tests** make this skill unique:
 

@@ -54,11 +54,20 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 2. **确认式终审**：终审轮只做"我同意"式确认，没有新的发现 → 终审形同虚设。
 3. **纯抽象讨论**：只在抽象层面讨论，不落地到具体场景和操作路径 → 遗漏实际问题。
 
+### 交付目标（所有轮次为此服务）
+
+用户从 cross-review 拿走的东西只有三件：
+1. **决策**：最终做什么、不做什么、为什么
+2. **行动**：下一步具体执行项
+3. **溯源能力**：想追问"为什么这么决定"时能翻回讨论
+
+`final.md` 必须自包含地回答这三件事——读完它用户不应再需要让模型口头解释。所有流程改动以此为目标函数。
+
 ---
 
 ## 前置准备
 
-### Step 1：理解任务
+### Step 1：理解任务 + 任务对齐卡
 
 请用户描述任务目标。任务可以是：
 - 评审已有的文档、方案或代码（提供文件路径、文本内容或其他材料）
@@ -67,6 +76,27 @@ description: "Multi-model collaboration: orchestrate multiple AI models to revie
 - 其他任何需要多模型协同的工作
 
 阅读并充分理解任务目标、背景和约束条件。
+
+**任务对齐卡（非阻塞展示给用户）**：主模型读完任务后，输出一张对齐卡直接展示给用户，**不等待用户确认，立即进入 Step 2**。用户若要调整只需打断或追加说明：
+
+```markdown
+## 任务对齐
+- **目标**：[一句话]
+- **关键约束**：[≤ 3 条]
+- **成功标准**：[final.md 要回答什么问题——这是整个流程的目标函数]
+- **任务类型**：[review | design | discuss | create]
+- **模式建议**：[quick | full] — 理由
+- **视角分配**：A=... / B=... / C=...
+- **预期产出**：final.md（强模板）+ action.md（仅当长清单时）
+- **同项目历史**：[检测到的 run-xxx，提议 supersedes 关系 | 无历史]
+```
+
+**关键字段**：
+- **成功标准** 将被嵌入每个外部模型的 R1 prompt 中（见 `references/prompt-templates.md`），让所有模型从第一轮起服务于同一目标。
+- **任务类型** 决定 final.md 第 3 节的字段名（决策 / 修复 / 方案要点 / 结构要点）。
+- **同项目历史** 若存在更早的 run 且未被 supersede，询问用户是否标记为 `superseded_by` 当前 run（见 §supersedes 机制）。
+
+对齐卡保存到 `run-*/task-alignment.md`，并作为 `final.md` §1 的数据源。
 
 ### Step 2：确认参与协作的模型（含 CLI 配置持久化）
 
@@ -187,7 +217,7 @@ models:
 | 2 个模型 | 主模型 → 视角 A + C，外部模型 → 视角 B |
 | 1 个模型 | 主模型在不同轮次中切换视角 |
 
-### Step 4：创建输出目录
+### Step 4：创建输出目录 + 检查历史 run
 
 在当前工作目录或项目根目录下创建带时间戳的运行目录：
 
@@ -195,7 +225,19 @@ models:
 cross-review-records/run-{YYYYMMDD-HHmm}/
 ```
 
-如用户在同一任务上重新运行，创建新的 `run-*` 目录，不覆盖历史记录。
+**启动时做两件事**：
+
+1. **历史残留归档**（F3）：检测 `cross-review-records/` 根目录下非 `run-*/` 格式的老文件（如 `final-output-ws.md`、`round1-claude.md` 等早期命名），自动移入 `cross-review-records/_archive/` 子目录。向用户报告一次："已归档 N 个早期文件到 _archive/"，不阻塞。
+
+2. **supersedes 关系**（Q5 盲点补救）：扫描 `cross-review-records/run-*/final.md`，找出最新的、`status: active` 的 run。若存在且其任务与当前任务主题相关：
+   - 询问用户："检测到 `run-xxxxxx` 讨论的是同主题。要将其标记为已被本 run 取代吗？（default: yes）"
+   - 用户确认后：旧 run 的 `final.md` frontmatter 更新 `status: superseded`、`superseded_by: run-<new>`，文件顶部插入红框提示
+   - 新 run 的 `final.md` frontmatter 写入 `supersedes: run-<old>`
+   - 维护 `cross-review-records/current.md`（或 symlink）指向最新有效 run 的 final.md
+
+这两步可通过 `scripts/cross_review_runtime.py run-init --dir cross-review-records/` 统一执行。
+
+如用户在**同一任务**上重新运行，**永远创建新的 `run-*` 目录**（不覆盖历史），通过 supersedes 关系链接。
 
 ---
 
@@ -305,7 +347,7 @@ Preflight 在 Step 2a 的热启动路径中自动完成。使用**配置文件�
 
 ---
 
-## 快速模式（2 轮）
+## 快速模式（2 轮 + 轻量对抗 + 独立 review）
 
 ### Round 1：独立工作（并行）
 
@@ -313,31 +355,77 @@ Preflight 在 Step 2a 的热启动路径中自动完成。使用**配置文件�
 
 1. 主模型直接开始工作，产出自己视角的结果
 2. 同时用 CLI 命令并行调用外部模型（后台运行）
+3. 所有外部模型的 R1 prompt 都必须嵌入 `success_criteria`（从任务对齐卡带入）
 
 > Prompt 模板：Read `references/prompt-templates.md` → "Round 1: Independent Work"
+
+**R1 完成后向用户输出阶段简报**（≤5 行，非阻塞）：
+```
+R1 完成。{N} 个模型产出有效输出。
+核心共识：{一句}
+核心分歧：{1-2 条}
+下一步：进入 R2 交叉验证
+```
 
 **输出文件：** `r1.{model_name}.md`
 
 ---
 
-### Round 2：交叉验证与综合
+### Round 2：交叉验证
 
-**目标：** 每个模型阅读其他模型的 Round 1 输出，进行验证、质疑和补充。主模型最终综合所有输入，产出最终结果。
+**目标：** 每个模型阅读其他模型的 Round 1 输出，进行验证、质疑和补充。
 
 1. 主模型阅读外部模型的 Round 1 成果（已通过 `--output-last-message` 等方式清洗掉元数据噪声）
 2. 将其他模型的 Round 1 clean 输出发送给外部模型做交叉验证
 3. **仅当某个 Round 1 输出超过 5000 字时**，主模型制作 digest 替代原始输出传递，并在 digest 中标注"完整内容见 r1.{model}.md"
-4. 外部模型完成后，主模型综合所有 Round 1 + Round 2 内容，输出最终结果
 
 > Prompt 模板：Read `references/prompt-templates.md` → "Round 2: Cross-Validation"
 
-**快速模式综合要求**：不要简单罗列合并各方观点。必须对分歧点做明确裁决并说明理由，对共识点做简要确认。最终输出应体现综合判断，而非拼接。
+**R2 完成后向用户输出阶段简报**：
+```
+R2 完成。{关键增量 1-2 条}。
+下一步：主模型综合 → 30 秒对抗 → 生成 final.md
+```
 
-**鼓励保留"争议与分歧"部分，记录不同模型的矛盾观点。**
+**输出文件：** `r2.{model_name}.md`
+
+---
+
+### Round 2.5：30 秒轻量对抗（D1，防共识偏见）
+
+**目标：** 快速模式只有 2 轮，无对抗环节。在主模型写完综合草稿后、落盘 final.md 前，用一个外部模型做 ≤500 字的攻击，防止"共识偏见"反模式。
+
+1. 主模型基于 R1 + R2 写一份综合草稿（**在内存中**，不落盘）
+2. 把草稿发给一个外部模型（优先选择 R2 阶段发现最多的模型），用精简 prompt 要求"指出最致命的 1-2 个攻击点"
+3. 主模型根据攻击点修订草稿
+
+> Prompt 模板：Read `references/prompt-templates.md` → "Quick Mode: 30-Second Devil's Advocate"
+
+**输出文件：** `r2.attack.{model_name}.md`
+
+---
+
+### Round 3：主模型综合 + 独立 Final Review（C1）
+
+**目标：** 生成符合强模板的 `final.md`，并经外部模型独立复核。
+
+1. 主模型按 `templates/final.md.tmpl` 生成 `final.md`（见 §final.md 强模板）
+2. 主模型自检硬校验清单 8 项，全部通过才进入下一步
+3. 可选自动化校验：`scripts/cross_review_runtime.py check-final --file final.md`
+4. **独立 Final Review（C1）**：把 `final.md` 发给一个外部模型，要求回答"是否自包含（TL;DR + 决策 + 行动）"
+5. 如 review 结论为 `returned-for-rework`：主模型根据反馈修订 final.md，再次自检，不重新跑 review
+6. review 通过后，final.md 标记 `independent_review: pass` 并落盘
+
+> Prompt 模板：Read `references/prompt-templates.md` → "Independent Final Review"
+
+**快速模式综合要求**：不要简单罗列合并各方观点。必须对分歧点做明确裁决并说明理由，对共识点做简要确认。final.md §2 的"分歧与裁决"表格必须反映真实分歧，不可粉饰。
 
 **输出文件：**
 - `r2.{model_name}.md` — 各模型的交叉验证
-- `final.md` — 最终综合结果
+- `r2.attack.{model_name}.md` — 30 秒对抗产出
+- `r3.review.{model_name}.md` — 独立 Final Review 产出
+- `final.md` — 最终交付文档（硬模板）
+- `action.md` — 行动清单（仅当 P0+P1+P2 总数 ≥ 3 条时生成，否则全部内嵌 final.md §5）
 
 ---
 
@@ -402,17 +490,123 @@ Preflight 在 Step 2a 的热启动路径中自动完成。使用**配置文件�
 
 **输出文件：**
 - `r4.{model_name}.md` — 各模型的对抗性挑战报告
-- `final.md` — 主模型综合 Round 4 后的最终方案
 
 **Round 4 发现 Critical/Major 级问题时的回路机制：**
 - 发现 Critical → 回到 Round 3b（只重跑受影响主题），产出 `r3b.synthesis.md`，然后重新进入 Round 4
 - 发现 Major → 记录为遗留风险，评估是否需要回路
 - 回路最多执行 1 次，避免无限循环
 
-**最终方案必须包含：**
-- 经过对抗性挑战后保留的方案（及理由）
-- 被攻破而修改/放弃的方案（及理由）
+---
+
+### Round 5：生成 final.md + 独立 Final Review（C1，完备模式必做）
+
+**目标：** 完备模式也必须通过独立 Final Review 才能交付 final.md。流程与快速模式 Round 3 相同，只是输入材料多了 R4 对抗结果。
+
+1. 主模型按 `templates/final.md.tmpl` 生成 `final.md`，整合 R4 对抗结果
+2. 自检硬校验清单 8 项
+3. 把 `final.md` 发给一个外部模型做独立 Final Review
+4. 如 `returned-for-rework` → 主模型修订 → 再次自检 → 落盘
+
+> Prompt 模板：Read `references/prompt-templates.md` → "Independent Final Review"
+
+**final.md 必须包含：**
+- 经过对抗性挑战后保留的方案（及理由，标注 "R4 未攻破"）
+- 被攻破而修改/放弃的方案（及理由，标注 "R4 攻击 N 导致修正"）
 - 遗留风险清单（已知但接受的风险）
+- 独立 review 结论（`independent_review: pass`）
+
+**输出文件：**
+- `r5.review.{model_name}.md` — 独立 Final Review 产出
+- `final.md` — 最终交付文档
+- `action.md` — 行动清单（条件生成）
+
+---
+
+## final.md 强模板（交付物核心）
+
+**设计理念**：final.md 不是"模型自由写的综合报告"，而是"硬约束下的编译产物"。缺字段即视为未完成，必须返工。目的是让用户拿到 final.md 即可独立回答三个问题，不再需要让模型解释。
+
+### 模板位置
+
+`templates/final.md.tmpl` — 强约束骨架，所有任务类型共用。
+
+### 必填字段
+
+**Frontmatter（8 项）**：
+- `task` — 任务一句话
+- `mode` — quick / full
+- `task_type` — review / design / discuss / create
+- `models` — lead + external 列表
+- `run_id` — run-YYYYMMDD-HHmm
+- `created_at` — ISO8601
+- `status` — active / superseded
+- `success_criteria` — 直接摘自任务对齐卡
+
+**Frontmatter 可选**：
+- `supersedes` / `superseded_by` — supersedes 链
+- `synthesis_bias_note` — 主模型 R1 立场与裁决关系一句（C2 压缩版，可留 null）
+- `independent_review` — C1 结论（pass / returned-for-rework）
+
+**正文 8 节**：
+1. **TL;DR** — 3-5 句，回答"任务/决策/下一步/取舍"四项
+2. **任务与约束** — 含成功标准
+3. **核心分歧与裁决** — 至少 1 行表格，或显式"无关键分歧"+ R2 补充清单
+4. **最终方案** — ≥ 1 个决策，每个含"做什么/为什么/来源"
+5. **行动项** — P0 至少 1 条（或显式"无需行动"+ 理由）
+6. **被否决的替代路径** — 或写"无"
+7. **遗留风险与未决问题** — 或写"无"
+8. **附录：讨论脉络** — 折叠摘要
+
+### 硬校验清单（8 项）
+
+主模型交付 final.md 前必须自检（任何一项不通过则必须返工）。可运行 `scripts/cross_review_runtime.py check-final --file final.md` 做结构化校验：
+
+1. frontmatter 8 个必填字段齐全
+2. TL;DR ≥ 3 句，四项问题全覆盖
+3. §2 分歧表 ≥ 1 行（或显式"无关键分歧"+ R2 补充）
+4. 每个决策都含"做什么/为什么/来源"三子字段
+5. §5 P0 行动项 ≥ 1 条（或显式"无需行动"+ 理由）
+6. §6 遗留风险字段显式填写（没有就写"无"）
+7. `task_type` 与模板骨架一致
+8. 总行数 ≤ 800（超出则内容下沉 action.md 或附录）
+
+### 任务类型的字段变体
+
+| task_type | §3 字段名 | §5 典型长度 | action.md 何时独立生成 |
+|-----------|-----------|-----------|---------------------|
+| review | "修复 N" | 5-20 条 | P0+P1 ≥ 3 条 |
+| design | "方案要点 N" | 3-10 条 | 总条数 ≥ 3 |
+| discuss | "决策 N" | 1-5 条 | 有明确后续动作时 |
+| create | "结构要点 N" | 0-3 条 | 极少独立生成 |
+
+---
+
+## supersedes 机制（多次重跑的权威性）
+
+**问题**：同一任务重跑多次会产生多个 `run-*/final.md`，用户无法判断"哪份是权威"。
+
+**解决**：通过 frontmatter 的 `supersedes` / `superseded_by` 链显式标注版本关系。
+
+### 机制细节
+
+1. **Run 启动时检测**（Step 4 的第 2 项）：扫描 `cross-review-records/run-*/` 下 `status: active` 的 final.md
+2. **询问用户**：如发现相关历史 run（同一主题），询问是否标记为 superseded
+3. **新旧文件更新**：
+   - 新 final.md：`supersedes: run-<old>`
+   - 旧 final.md：`status: superseded`, `superseded_by: run-<new>`，顶部插入红框 "⚠️ 本 run 已被 run-xxx 取代"
+4. **快捷指针**：`cross-review-records/current.md` 作为 symlink（或文本文件）指向最新 active final.md，方便 `cat current.md` 找到权威结论
+
+### 用户操作
+- 不想标记 supersedes（比如两次讨论是不同子问题）：回答 "no"，两个 run 都保持 active
+- 要回溯旧方案：`status: superseded` 的 run 仍然保留，可直接 cat 查看
+
+### 脚本支持
+
+```bash
+python3 scripts/cross_review_runtime.py mark-superseded \
+  --old run-20260410-0915 \
+  --new run-20260415-1535
+```
 
 ---
 
@@ -432,23 +626,47 @@ Preflight 在 Step 2a 的热启动路径中自动完成。使用**配置文件�
 
 ```
 cross-review-records/
+  current.md              # 最新 active run 的快捷指针
+  _archive/               # 老格式文件自动归档（F3）
+
   run-20260323-1640/
+    task-alignment.md     # 任务对齐卡（Step 1 产出，驱动全流程）
     status.json           # 每次外部调用的结构化状态
+    manifest.json         # 运行元数据（不负责状态机续跑）
     logs/                 # stdout / stderr / attempt output
+    invalid/              # 验证失败的输出
+
     r1.claude.md          # Round 1 各模型输出
     r1.codex.md
     r1.gemini.md
     r1.digest.md          # （可选）当某输出 >5000 字时的摘要
+
     r2.claude.md          # Round 2 各模型输出
     r2.codex.md
-    r2.5.codex.md         # Round 2.5（如有）
-    r3.synthesis.md       # Round 3 候选综合
-    r4.codex.md           # Round 4 对抗性挑战
+    r2.attack.codex.md    # 快速模式：30 秒对抗（D1）
+    r2.5.codex.md         # 完备模式：焦点反驳（如有）
+
+    r3.synthesis.md       # 完备模式：候选综合
+    r3.review.codex.md    # 快速模式：独立 Final Review（C1）
+    r3b.synthesis.md      # 完备模式：R4 回路后修订
+
+    r4.codex.md           # 完备模式：对抗性挑战
     r4.gemini.md
-    final.md              # 最终方案
-    manifest.json         # 运行元数据
-    invalid/              # 验证失败的输出
+    r5.review.gemini.md   # 完备模式：独立 Final Review（C1）
+
+    final.md              # 最终交付文档（硬模板，自包含）
+    action.md             # （可选）完整行动清单，仅当 ≥ 3 条时生成
 ```
+
+### 文件角色
+
+| 文件 | 谁读 | 何时读 | 必读？ |
+|------|------|--------|-------|
+| `final.md` | 用户 + 下游 AI | 想知道决策/行动 | 必读 |
+| `action.md` | 执行者 | 照单执行 | 仅当长清单 |
+| `task-alignment.md` | 流程内部 | R1 prompt 生成时 | AI 读 |
+| `r*.md` | 流程内部 + 想追溯的用户 | 想追问"为什么" | 可选 |
+| `current.md` | 用户 | 快速定位权威 run | 经常 |
 
 ### 文件命名规范
 
@@ -500,17 +718,25 @@ cross-review-records/
 
 ## 执行检查清单
 
-每轮完成后，主模型自检：
+### 每轮完成后，主模型自检
 
 - [ ] 所有输出已保存到运行目录
 - [ ] 文件命名遵循 `r{N}.{model_name}.md` 格式
 - [ ] 外部模型输出已通过传输校验和语义校验
 - [ ] 当前轮次的所有模型都已完成（后台任务已返回结果）
-- [ ] 已向用户报告当前轮次的关键发现摘要
+- [ ] 已向用户报告**阶段简报**（共识 + 分歧 + 下一步，≤5 行，非阻塞）
 - [ ] `manifest.json` 已更新
 
-全部完成后：
+### final.md 交付前，主模型必须过硬校验 8 项
 
-- [ ] `final.md` 包含最终方案/结论
-- [ ] 向用户提供总结和建议的下一步行动
-- [ ] 询问用户是否保留中间过程文档
+见 §final.md 强模板 中的"硬校验清单"。任何一项不通过 → 返工。
+可运行：`python3 scripts/cross_review_runtime.py check-final --file <path-to-final.md>`
+
+### 独立 Final Review 通过后
+
+- [ ] `final.md` frontmatter `independent_review: pass`
+- [ ] 若长行动清单已拆出 → `action.md` 已落盘
+- [ ] `cross-review-records/current.md` 指向本 run
+- [ ] 若存在 supersedes 关系，旧 run 已更新 `status: superseded`
+- [ ] 向用户提供**总结**（TL;DR 的简化版）+ 下一步动作的 CTA（"建议先执行 P0-1 到 P0-N"）
+- [ ] 询问用户是否保留中间过程文档（r1/r2/r3 系列）

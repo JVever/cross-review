@@ -11,6 +11,11 @@ All prompt templates used in the cross-review workflow.
 ```
 你是一位资深专家。请针对以下任务，从指定视角给出你的专业分析和建议。
 
+## 本任务的成功标准
+{SUCCESS_CRITERIA}
+
+注意：你的分析要服务于这个成功标准。如果你发现即使完成最好的分析也无法回答这个成功标准（例如缺少关键信息），请在"未决问题"中明确说出。
+
 ## 你的主责视角（优先关注，但不限于此）
 {PRIMARY_FOCUS}
 
@@ -53,6 +58,37 @@ All prompt templates used in the cross-review workflow.
 - 建议使用上方的输出骨架，但如果任务需要其他结构可以调整。
 - 简洁优于冗长，但深度优于简洁。宁可分析透彻写 3000 字，也不要为了控制篇幅而省略重要发现。
 - 请用中文输出。
+```
+
+---
+
+## Quick Mode: 30-Second Devil's Advocate (External Model Prompt)
+
+Used in quick mode between the lead model's Round 2 synthesis draft and final.md finalization. Prevents consensus bias from slipping through in 2-round mode. Keep prompt tight: one external model, ≤500 words response, 30-60 seconds.
+
+```
+这是一份快速综合草稿。请用 ≤500 字指出最致命的 1-2 个攻击点。不要做全面评审。
+
+## 原始任务
+{TASK_DESCRIPTION}
+
+## 成功标准
+{SUCCESS_CRITERIA}
+
+## 快速综合草稿（来自主模型）
+{SYNTHESIS_DRAFT}
+
+## 你的任务
+重点检查两类问题：
+1. **共识偏见**：三方一致同意的点中，有哪个"所有人都没质疑的隐含前提"可能不成立？
+2. **未考虑的边界场景**：用一个具体的用户情景反驳该方案——在什么场景下它会失效？
+
+如果你找不到致命攻击点，写"无致命攻击点"，并简述你为什么认为草稿是扎实的。**不要**客气式肯定。
+
+## 输出格式
+- ≤500 字
+- 格式：`## 攻击 1：...\n**证据**：...\n**后果**：...\n**建议**：...`
+- 请用中文。
 ```
 
 ---
@@ -164,6 +200,62 @@ The Round 3 synthesis document must use "candidate" framing, not "final" framing
 | 编号 | 冲突 | 各方立场 | 影响范围 |
 |------|------|---------|---------|
 | C1 | ... | A: ..., B: ... | ... |
+```
+
+---
+
+## Independent Final Review (External Model Prompt)
+
+Used after the lead model writes `final.md` (quick mode: after Round 2 synthesis; full mode: after Round 4 modifications). An external model reads the final.md draft and validates self-containment. If review fails, lead model must rework.
+
+```
+你是一位资深评审者。请**独立复核**以下 `final.md` 草稿，判断它是否真正自包含（"拿到就不用再问"）。
+
+## 原始任务
+{TASK_DESCRIPTION}
+
+## 成功标准（final.md 必须能回答的问题）
+{SUCCESS_CRITERIA}
+
+## final.md 草稿
+{FINAL_MD_DRAFT}
+
+## 你的任务
+
+逐项回答（不要绕圈）：
+
+1. **TL;DR 充分性**：只读 §TL;DR 能否回答"任务/决策/下一步/取舍"四个问题？缺哪个？
+2. **裁决可溯源**：每个决策的"来源"锚点是否真实指向前面的讨论？有无空引用或造引用？
+3. **分歧表有效性**：§2 的表格是否反映了模型间的真实分歧，还是被主模型粉饰为"看似分歧但已解决"？
+4. **行动项可执行**：§5 的 P0 动作是否可以直接交给执行者做，而不需要再翻阅其他文档？
+5. **综合者偏差**：主模型在 R1 的立场是否被过度保留？有哪些少数意见被边缘化？给出具体证据。
+6. **盲点**：final.md 遗漏了哪个重要视角或问题？
+
+## 输出格式
+
+```
+## 评审结论
+{{ pass | returned-for-rework }}
+
+## 分项判断
+1. TL;DR 充分性：{{ 通过 / 未通过 }} — {{ 原因 }}
+2. 裁决可溯源：...
+3. 分歧表有效性：...
+4. 行动项可执行：...
+5. 综合者偏差：...
+6. 盲点：...
+
+## 必须修正的问题（如 returned-for-rework）
+- 问题 1：{{ 具体位置 + 怎么改 }}
+- 问题 2：...
+
+## 一句话结论
+```
+
+## 输出格式硬约束
+- 不要客气式肯定。真有问题就说"未通过"。
+- 不要输出思考过程。
+- 请用中文输出。
 ```
 
 ---

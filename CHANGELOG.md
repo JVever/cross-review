@@ -1,5 +1,47 @@
 # Changelog
 
+## [3.0.0] - 2026-04-15
+
+### Breaking: final.md 改为硬约束编译产物
+
+`final.md` 不再是"模型自由写的综合报告"。现在是**强模板下的编译产物**——缺字段则校验失败，必须返工。目的：解决"每次 final.md 结构都不同、用户需要让模型再解释一遍"的痛点。
+
+### Added
+
+- `skills/cross-review/templates/final.md.tmpl` — final.md 强模板（8 节 + frontmatter 8 字段 + 8 项硬校验清单）
+- `skills/cross-review/templates/action.md.tmpl` — 行动清单模板（仅当 ≥ 3 条行动时独立生成，否则内嵌 final.md §5）
+- `cross_review_runtime.py check-final` — 对 final.md 做 8 项结构化校验（frontmatter/TL;DR/分歧表/决策字段/P0/风险/task_type/行数）
+- `cross_review_runtime.py archive-legacy` — 自动把非 `run-*/` 的老格式文件归档到 `_archive/`
+- `cross_review_runtime.py mark-superseded` — 标注旧 run 被新 run 取代，更新 frontmatter + 插入顶部红框
+- `cross_review_runtime.py run-init` — 启动时归档 + 检测历史 active run（供 SKILL.md Step 4 调用）
+- **任务对齐卡**（SKILL.md Step 1）：主模型读完任务后输出对齐卡（目标/约束/成功标准/视角/模式），非阻塞
+- **成功标准嵌入 R1 prompt**（A2）：所有外部模型从第一轮起就知道 final.md 要回答什么
+- **快速模式 30 秒对抗**（D1）：R2 综合后、落盘前用一个外部模型做 ≤500 字攻击，防共识偏见
+- **独立 Final Review**（C1）：final.md 落盘前必须过外部模型的独立复核（"是否自包含"）
+- **supersedes 机制**（Q5）：多次重跑的 run 通过 `supersedes`/`superseded_by` frontmatter 字段链接；`current.md` 指向最新 active run
+- **阶段简报**（B2）：R1/R2 结束后主模型输出 3-5 行非阻塞简报给用户
+- 5 类新单元测试：final.md 校验、归档、supersedes、run-init
+
+### Changed
+
+- `prompt-templates.md` R1 模板新增 `{SUCCESS_CRITERIA}` 字段
+- `SKILL.md` 主流程整合：Step 1 加任务对齐卡、Step 4 加归档+supersedes 检测、快速模式加 R2.5 对抗 + R3 独立 review、完备模式加 R5 独立 review
+- 目录结构新增 `current.md` 快捷指针 + `_archive/` 子目录
+
+### Removed / Demoted
+
+- **divergence-ledger.md 独立文件**（合并进 final.md §2 分歧表，避免"三份文档同步漂移"）
+- **综合者自披露独立章节 §7**（压缩为 frontmatter 中可选 `synthesis_bias_note` 一行）
+- **manifest 状态机/续跑**（不命中"交付清晰度"目标，延后）
+
+### 迁移说明
+
+老 `run-*/final.md` 不会被自动转换。如需校验老 final：
+```bash
+python3 scripts/cross_review_runtime.py check-final --file run-xxx/final.md
+```
+大概率会 fail，这正确反映"老版本不符合新模板"。新 run 自动走新流程。
+
 ## [2.2.1] - 2026-04-03
 
 ### Added

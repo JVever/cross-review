@@ -958,6 +958,356 @@ def resolve_model(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# final.md hard validation (Issue #core: compile final.md, don't just draft it)
+# --------------------------------------------------------------------------
+
+FINAL_REQUIRED_FRONTMATTER = (
+    "task",
+    "mode",
+    "task_type",
+    "models",
+    "run_id",
+    "created_at",
+    "status",
+    "success_criteria",
+)
+FINAL_REQUIRED_SECTIONS = (
+    "## TL;DR",
+    "## 1. 任务与约束",
+    "## 2. 核心分歧与裁决",
+    "## 3. 最终方案",
+    "## 5. 行动项",
+    "## 6. 遗留风险与未决问题",
+)
+FINAL_MAX_LINES = 800
+FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
+
+
+def parse_frontmatter(text: str) -> Dict:
+    match = FRONTMATTER_RE.match(text)
+    if not match:
+        return {"_raw_body": text, "_has_frontmatter": False}
+    try:
+        data = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError as exc:
+        return {"_raw_body": match.group(2), "_has_frontmatter": True, "_parse_error": str(exc)}
+    if not isinstance(data, dict):
+        return {"_raw_body": match.group(2), "_has_frontmatter": True, "_parse_error": "frontmatter is not a mapping"}
+    data["_raw_body"] = match.group(2)
+    data["_has_frontmatter"] = True
+    return data
+
+
+def count_tldr_sentences(body: str) -> int:
+    # Extract content between "## TL;DR" and next "## "
+    match = re.search(r"## TL;DR\s*\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
+    if not match:
+        return 0
+    tldr = match.group(1).strip()
+    # Strip template placeholders
+    if re.match(r"^\s*\{\{", tldr) or not tldr:
+        return 0
+    sentences = re.split(r"[。.!?！？]\s*", tldr)
+    return len([s for s in sentences if s.strip()])
+
+
+def divergence_table_rows(body: str) -> int:
+    # Extract content between "## 2. 核心分歧与裁决" and next "## "
+    match = re.search(r"## 2\.\s*核心分歧与裁决\s*\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
+    if not match:
+        return 0
+    section = match.group(1)
+    if "无关键分歧" in section:
+        return 1  # explicit "no divergence" counts as valid
+    rows = re.findall(r"^\|[^|\n]+\|[^|\n]+\|", section, re.MULTILINE)
+    # Filter header and separator rows
+    data_rows = [r for r in rows if "---" not in r and "议题" not in r and "Model" not in r]
+    return len(data_rows)
+
+
+def decision_fields_complete(body: str) -> Dict:
+    # Extract all "### 决策 N / 修复 N / 方案要点 N / 结构要点 N" blocks
+    pattern = re.compile(r"### (决策|修复|方案要点|结构要点)\s+\d+[：:].*?(?=\n### |\n## |\Z)", re.DOTALL)
+    blocks = pattern.findall(body)
+    block_matches = pattern.finditer(body)
+    issues: List[str] = []
+    count = 0
+    for match in block_matches:
+        count += 1
+        block = match.group(0)
+        missing = []
+        for field in ("做什么", "为什么", "来源"):
+            if f"**{field}**" not in block:
+                missing.append(field)
+        if missing:
+            issues.append(f"决策块 #{count} 缺字段: {', '.join(missing)}")
+    return {"total_decisions": count, "issues": issues}
+
+
+def action_p0_count(body: str) -> int:
+    match = re.search(r"## 5\.\s*行动项\s*\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
+    if not match:
+        return 0
+    section = match.group(1)
+    if "无需行动" in section:
+        return 1  # explicit pass
+    # Count lines like "- [ ] **P0-N** ..." or "- [ ] **P0-N**..."
+    actions = re.findall(r"^\s*-\s*\[[ x]\]\s*\*\*P0-\d+\*\*", section, re.MULTILINE)
+    return len(actions)
+
+
+def risk_field_filled(body: str) -> bool:
+    match = re.search(r"## 6\.\s*遗留风险与未决问题\s*\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
+    if not match:
+        return False
+    section = match.group(1).strip()
+    if not section:
+        return False
+    # Placeholder pattern starts with {{
+    if re.match(r"^\s*\{\{", section):
+        return False
+    return True
+
+
+def check_final_md(path: Path) -> Dict:
+    if not path.exists():
+        return {"passed": False, "errors": [f"file not found: {path}"], "checks": {}}
+    text = path.read_text(encoding="utf-8")
+    line_count = text.count("\n") + 1
+    fm = parse_frontmatter(text)
+    errors: List[str] = []
+    checks: Dict[str, Dict] = {}
+
+    # Check 1: frontmatter 8 required fields
+    check1_missing = []
+    if not fm.get("_has_frontmatter"):
+        errors.append("frontmatter 缺失（文件必须以 `---\\n...\\n---\\n` 开头）")
+        check1_missing = list(FINAL_REQUIRED_FRONTMATTER)
+    else:
+        if fm.get("_parse_error"):
+            errors.append(f"frontmatter YAML 解析失败: {fm['_parse_error']}")
+        for field in FINAL_REQUIRED_FRONTMATTER:
+            if field not in fm:
+                check1_missing.append(field)
+    checks["frontmatter_fields"] = {
+        "passed": not check1_missing,
+        "missing": check1_missing,
+    }
+
+    body = fm.get("_raw_body", text)
+
+    # Check 2: TL;DR >= 3 sentences
+    tldr_sentence_count = count_tldr_sentences(body)
+    checks["tldr_sufficient"] = {
+        "passed": tldr_sentence_count >= 3,
+        "sentence_count": tldr_sentence_count,
+    }
+
+    # Check 3: §2 divergence table >= 1 data row or "无关键分歧"
+    div_rows = divergence_table_rows(body)
+    checks["divergence_table"] = {
+        "passed": div_rows >= 1,
+        "rows": div_rows,
+    }
+
+    # Check 4: each decision has 做什么/为什么/来源
+    dec_check = decision_fields_complete(body)
+    checks["decision_fields"] = {
+        "passed": dec_check["total_decisions"] >= 1 and not dec_check["issues"],
+        "total_decisions": dec_check["total_decisions"],
+        "issues": dec_check["issues"],
+    }
+
+    # Check 5: P0 action items >= 1 or "无需行动"
+    p0_count = action_p0_count(body)
+    checks["p0_actions"] = {
+        "passed": p0_count >= 1,
+        "count": p0_count,
+    }
+
+    # Check 6: risk field filled
+    checks["risk_field"] = {
+        "passed": risk_field_filled(body),
+    }
+
+    # Check 7: task_type consistent with body structure (advisory only)
+    task_type = fm.get("task_type") if fm.get("_has_frontmatter") else None
+    checks["task_type_consistent"] = {
+        "passed": task_type in ("review", "design", "discuss", "create"),
+        "task_type": task_type,
+    }
+
+    # Check 8: total line count
+    checks["line_count"] = {
+        "passed": line_count <= FINAL_MAX_LINES,
+        "lines": line_count,
+        "max": FINAL_MAX_LINES,
+    }
+
+    # Aggregate
+    all_passed = all(c.get("passed") for c in checks.values()) and not errors
+    return {
+        "passed": all_passed,
+        "errors": errors,
+        "checks": checks,
+        "path": str(path),
+    }
+
+
+def check_final_command(args: argparse.Namespace) -> int:
+    result = check_final_md(Path(args.file).expanduser())
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["passed"] else 1
+
+
+# --------------------------------------------------------------------------
+# archive-legacy: move old non-run-* files into _archive/
+# --------------------------------------------------------------------------
+
+RUN_DIR_RE = re.compile(r"^run-\d{8}-\d{4}$")
+
+
+def archive_legacy_files(records_dir: Path) -> Dict:
+    if not records_dir.exists():
+        return {"moved": [], "error": f"directory not found: {records_dir}"}
+    archive_dir = records_dir / "_archive"
+    moved: List[str] = []
+    skipped: List[str] = []
+    for child in sorted(records_dir.iterdir()):
+        if child.name == "_archive":
+            continue
+        if child.name == "current.md":
+            continue
+        if child.name.startswith(".") and child.name != ".DS_Store":
+            continue
+        if child.is_dir() and RUN_DIR_RE.match(child.name):
+            continue
+        # Treat everything else as legacy
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        target = archive_dir / child.name
+        if target.exists():
+            # Add timestamp to avoid collision
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            target = archive_dir / f"{child.stem}-{stamp}{child.suffix}"
+        try:
+            child.rename(target)
+            moved.append(f"{child.name} -> _archive/{target.name}")
+        except OSError as exc:
+            skipped.append(f"{child.name}: {exc}")
+    return {"moved": moved, "skipped": skipped, "archive_dir": str(archive_dir)}
+
+
+def archive_legacy_command(args: argparse.Namespace) -> int:
+    result = archive_legacy_files(Path(args.dir).expanduser())
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+# --------------------------------------------------------------------------
+# mark-superseded: link old and new run's final.md
+# --------------------------------------------------------------------------
+
+SUPERSEDED_BANNER = "> ⚠️ **本 run 已被 {new_run} 取代。最新结论请见 `../{new_run}/final.md`**\n\n"
+
+
+def update_frontmatter_field(text: str, field: str, value: str) -> str:
+    # Replace existing field, or append to frontmatter block
+    pattern = re.compile(rf"^({field}:\s*).*$", re.MULTILINE)
+    if pattern.search(text):
+        return pattern.sub(rf"\g<1>{value}", text, count=1)
+    # Insert before closing ---
+    return re.sub(r"^---\n(.*?)\n---\n", rf"---\n\1\n{field}: {value}\n---\n", text, count=1, flags=re.DOTALL)
+
+
+def mark_superseded_command(args: argparse.Namespace) -> int:
+    records_dir = Path(args.records_dir).expanduser()
+    old_run = args.old
+    new_run = args.new
+    old_final = records_dir / old_run / "final.md"
+    new_final = records_dir / new_run / "final.md"
+    if not old_final.exists():
+        print(json.dumps({"error": f"old final not found: {old_final}"}), file=sys.stderr)
+        return 2
+    if not new_final.exists():
+        print(json.dumps({"error": f"new final not found: {new_final}"}), file=sys.stderr)
+        return 2
+
+    # Update old final.md
+    old_text = old_final.read_text(encoding="utf-8")
+    old_text = update_frontmatter_field(old_text, "status", '"superseded"')
+    old_text = update_frontmatter_field(old_text, "superseded_by", f'"{new_run}"')
+    # Insert banner after frontmatter (only if not already present)
+    banner = SUPERSEDED_BANNER.format(new_run=new_run)
+    if "本 run 已被" not in old_text:
+        old_text = re.sub(
+            r"^(---\n.*?\n---\n)",
+            rf"\g<1>\n{banner}",
+            old_text,
+            count=1,
+            flags=re.DOTALL,
+        )
+    old_final.write_text(old_text, encoding="utf-8")
+
+    # Update new final.md
+    new_text = new_final.read_text(encoding="utf-8")
+    new_text = update_frontmatter_field(new_text, "supersedes", f'"{old_run}"')
+    new_final.write_text(new_text, encoding="utf-8")
+
+    # Update current.md
+    current = records_dir / "current.md"
+    current.write_text(f"{new_run}/final.md\n", encoding="utf-8")
+
+    print(json.dumps({
+        "old_run": old_run,
+        "new_run": new_run,
+        "current": str(current),
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+# --------------------------------------------------------------------------
+# run-init: archive legacy + detect active history
+# --------------------------------------------------------------------------
+
+def detect_active_runs(records_dir: Path) -> List[Dict]:
+    if not records_dir.exists():
+        return []
+    results: List[Dict] = []
+    for child in sorted(records_dir.iterdir(), reverse=True):
+        if not (child.is_dir() and RUN_DIR_RE.match(child.name)):
+            continue
+        final_md = child / "final.md"
+        if not final_md.exists():
+            continue
+        fm = parse_frontmatter(final_md.read_text(encoding="utf-8"))
+        if not fm.get("_has_frontmatter"):
+            continue
+        if fm.get("status") == "superseded":
+            continue
+        results.append({
+            "run_id": child.name,
+            "task": fm.get("task"),
+            "task_type": fm.get("task_type"),
+            "status": fm.get("status", "active"),
+            "created_at": fm.get("created_at"),
+            "path": str(final_md),
+        })
+    return results
+
+
+def run_init_command(args: argparse.Namespace) -> int:
+    records_dir = Path(args.dir).expanduser()
+    records_dir.mkdir(parents=True, exist_ok=True)
+    archive = archive_legacy_files(records_dir)
+    active = detect_active_runs(records_dir)
+    print(json.dumps({
+        "archived": archive,
+        "active_runs": active,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     default_config = str(Path.home() / ".config" / "cross-review" / "models.yaml")
     default_registry = str(Path.home() / ".config" / "cross-review" / "registry.json")
@@ -994,6 +1344,24 @@ def build_parser() -> argparse.ArgumentParser:
     resolve_parser.add_argument("--requested-model", required=True, help="Requested model alias")
     resolve_parser.add_argument("--force-refresh", action="store_true", help="Force catalog refresh")
     resolve_parser.set_defaults(func=resolve_model)
+
+    check_final_parser = subparsers.add_parser("check-final", help="Validate final.md against the hard template (8 checks).")
+    check_final_parser.add_argument("--file", required=True, help="Path to final.md")
+    check_final_parser.set_defaults(func=check_final_command)
+
+    archive_parser = subparsers.add_parser("archive-legacy", help="Move non-run-* files in cross-review-records/ into _archive/.")
+    archive_parser.add_argument("--dir", required=True, help="Path to cross-review-records/")
+    archive_parser.set_defaults(func=archive_legacy_command)
+
+    superseded_parser = subparsers.add_parser("mark-superseded", help="Mark an old run as superseded by a new run.")
+    superseded_parser.add_argument("--records-dir", default="cross-review-records", help="Path to cross-review-records/")
+    superseded_parser.add_argument("--old", required=True, help="Old run id, e.g. run-20260410-0915")
+    superseded_parser.add_argument("--new", required=True, help="New run id, e.g. run-20260415-1535")
+    superseded_parser.set_defaults(func=mark_superseded_command)
+
+    run_init_parser = subparsers.add_parser("run-init", help="Archive legacy files + detect active historical runs (used at Step 4 in SKILL.md).")
+    run_init_parser.add_argument("--dir", required=True, help="Path to cross-review-records/")
+    run_init_parser.set_defaults(func=run_init_command)
 
     return parser
 
