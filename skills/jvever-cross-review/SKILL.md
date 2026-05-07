@@ -1,5 +1,5 @@
 ---
-name: cross-review
+name: jvever-cross-review
 description: "Multi-model collaboration: orchestrate multiple AI models to review, discuss, analyze, or co-design together. 当用户希望与其他模型协作时使用，如「和 Gemini 一起讨论」「让 Claude 和 Codex 一起看看这个方案」「用多个 AI 帮我分析」「和其他模型一起审一下」「交叉评审」「多模型协作」「多模型讨论」「multi-model review」「collaborative review」「discuss with Gemini」「review with multiple models」。适用于方案评审、架构设计、代码审查、问题探讨、内容创作等需要多视角或交叉验证的场景。"
 ---
 

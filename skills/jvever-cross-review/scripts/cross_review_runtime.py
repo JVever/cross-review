@@ -364,6 +364,13 @@ def ordered_candidates(alias_state: Dict, candidates: Sequence[str]) -> List[str
     return ordered + success_targets + unknown_targets + failed_targets
 
 
+def candidate_targets_for_request(catalog_items: Sequence[str], requested_model: str) -> List[str]:
+    candidates = matching_candidates(catalog_items, requested_model)
+    if not candidates and requested_model in catalog_items:
+        candidates = [requested_model]
+    return candidates
+
+
 def resolve_model_target(
     tool_key: str,
     model_cfg: Dict,
@@ -427,13 +434,17 @@ def resolve_model_target(
     )
     alias_state["requested_model"] = requested_model
 
-    candidates = matching_candidates(catalog_items, requested_model)
-    if not candidates and requested_model in catalog_items:
-        candidates = [requested_model]
+    candidates = candidate_targets_for_request(catalog_items, requested_model)
     candidates = ordered_candidates(alias_state, candidates)
+    fallback_model = model_cfg.get("fallback_model")
+    fallback_candidates: List[str] = []
+    if fallback_model and normalize_alias(fallback_model) != normalize_alias(requested_model):
+        fallback_candidates = candidate_targets_for_request(catalog_items, fallback_model)
+        fallback_candidates = [candidate for candidate in fallback_candidates if candidate not in candidates]
     resolved_model = candidates[0] if candidates else requested_model
     if not candidates:
         candidates = [requested_model]
+    candidates = list(candidates) + fallback_candidates
     return {
         "tool_key": tool_key,
         "requested_model": requested_model,
