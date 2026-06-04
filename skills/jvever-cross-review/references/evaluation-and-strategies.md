@@ -1,234 +1,91 @@
-# Evaluation Criteria & Advanced Strategies
+# Evaluation Criteria & Strategies
 
-Detailed evaluation criteria, degradation strategies, and execution checklists.
+Perspective assignment, output contract, validation, and degradation for the default **Claude (lead) + Codex (external)** pair.
 
----
-
-## Perspective Assignment by Task Type
-
-The lead model dynamically assigns focus perspectives based on task type. These are reference examples:
-
-**Technical Tasks** (code review, architecture design, API design, etc.):
-- Perspective A: Architecture consistency & data flow analysis
-- Perspective B: Technical implementation feasibility & risk
-- Perspective C: Edge cases, user experience & alternative approaches
-
-**Product/Strategy Tasks** (PRD, operations plan, business strategy, etc.):
-- Perspective A: Logical consistency & argument completeness
-- Perspective B: Feasibility & resource risk
-- Perspective C: User impact & alternative paths
-
-**Creative/Exploratory Tasks** (article writing, plan design, open discussion, etc.):
-- Perspective A: Structural completeness & core arguments
-- Perspective B: Audience fit & expression effectiveness
-- Perspective C: Innovation & differentiated perspectives
-
-> These are references only. The lead model should dynamically adjust perspective definitions based on the specific task. Users can also specify custom perspectives.
-
-### Assignment Rules
-
-| Model Count | Strategy |
-|-------------|----------|
-| 3 models | Lead model -> Perspective A, External 1 -> Perspective B, External 2 -> Perspective C |
-| 2 models | Lead model -> Perspective A + C, External -> Perspective B |
-| 1 model | Lead model switches perspectives across rounds |
+> Why a fixed pair: in practice, the more CLIs you orchestrate, the more likely one stalls / times out / fails auth and drags the whole run out. Default to these two; keep them stable. Add a third model only on explicit request (see below) — do not build machinery for "arbitrary N models."
 
 ---
 
-## Degradation Strategy
+## Perspective Assignment
 
-| Model Count | Round 1-2 | Round 3 | Round 4 |
-|-------------|-----------|---------|---------|
-| 3 (optimal) | Each with independent focus perspective | Lead model synthesizes | All models do all 4 checks with emphasis assignments |
-| 2 | Lead model takes Perspective A+C, external takes B | Lead model synthesizes, external reviews | Both do all 4 checks; external emphasizes attack, lead emphasizes synthesis |
-| 1 (minimum) | Lead model switches perspectives via different prompts | Lead model synthesizes | Use explicit adversarial prompt for self-attack |
+The lead assigns two focus perspectives by task type. Focus, not exclusive — each model should report anything important it finds.
 
----
+| Task type | Claude (lead) | Codex (external) |
+|-----------|---------------|------------------|
+| Technical (code / architecture / API) | Architecture consistency, data flow, UX, alternatives | Implementation feasibility & risk |
+| Product / strategy | Logical consistency, user impact, alternative paths | Feasibility & resource risk |
+| Creative / exploratory | Structure, core arguments, audience fit | Differentiated angles, counterexamples, edges |
 
-## CLI Configuration Persistence
+In full mode's Round 4, Codex plays devil's advocate (adversarial attack); the lead does the synthesis review. Users may specify custom perspectives.
 
-### Config File Location
-
-`~/.config/cross-review/models.yaml`
-
-Runtime memory lives in:
-
-`~/.config/cross-review/registry.json`
-
-### Three-Path Startup
-
-1. **Warm start** (config exists + healthcheck passes): Load config → run `healthcheck` per model → refresh registry if catalog is stale or CLI version changed → non-blocking notification → proceed to Round 1. No user confirmation needed.
-2. **Cold start** (no config): Run `which` detection → confirm with user → save config.
-3. **Fallback** (config exists but healthcheck fails / user requests new model): Re-guide only for the affected CLI → update config.
-
-### Healthcheck Commands (CLI-level, no model calls)
-
-| CLI | Command | Verifies |
-|-----|---------|----------|
-| Codex | `codex exec --help >/dev/null 2>&1` | CLI + subcommand exist |
-| Gemini | `gemini -v >/dev/null 2>&1` | CLI exists + version readable |
-| Crush | `crush models >/dev/null 2>&1` | CLI exists + models configured |
-
-Auth/network issues are caught by output validation on first real call, not by preflight.
-
-### Model Name Resolution
-
-When a user references a model by name (e.g., "GLM-5.1"), the lead model should:
-1. Check config for a CLI with matching `model_name` field or known provider (for example `crush`)
-2. Check `registry.json` for the most recently verified canonical target (for example `zai/glm-5.1`)
-3. Only if the registry has no verified target, or the catalog/version is stale, refresh the catalog and learn a new canonical target
-4. If no CLI can be matched, ask the user which CLI to use for that model, then save the mapping
+**Adding a third model**: only if the user explicitly asks AND the CLI already has an `invoke` template in `models.yaml`. Assign it a third perspective inline. Otherwise stay on the pair.
 
 ---
 
 ## Output Contract Enforcement
 
-### Runtime Wrapper
+Use `scripts/cross_review_runtime.py execute` for every external call. It captures stdout/stderr, exit code, duration, retries, and validation results; writes `status.json`, `logs/`, and `invalid/`.
 
-Prefer `scripts/cross_review_runtime.py execute` for every external model call.
+### Codex (built-in)
 
-The wrapper is responsible for:
-- Capturing stdout and stderr
-- Recording exit code, duration, retries, and validation result
-- Writing `status.json` and `logs/`
-- Saving failed artifacts under `invalid/`
-- Reusing and updating `registry.json` for model resolution
+Invoked by the runtime as `codex exec --full-auto --output-last-message {file} --color never --ephemeral` with the prompt on stdin:
 
-### For Codex CLI
+- `--output-last-message`: only the final message (filters out session metadata, thinking blocks, command logs)
+- `--ephemeral`: no session files persisted
+- `--color never`: no ANSI escape sequences
 
-**Required flags**: `--full-auto --output-last-message {file} --color never --ephemeral`
+### Any other CLI (via invoke template)
 
-- `--output-last-message`: Extracts only the final message, filtering out session metadata, thinking blocks, and command logs
-- `--ephemeral`: No session files persisted
-- `--color never`: No ANSI escape sequences
-
-### For Gemini CLI
-
-**Recommended**: `gemini -m gemini-3.1-pro-preview -p "{prompt}" > {file}`
-
-Notes:
-- `-p` requires the prompt as a string argument. Do NOT use `echo | gemini -p` (leaving `-p` without a value).
-- For Cross Review, prefer pinning Gemini explicitly with `model_name: gemini-3.1-pro-preview` instead of relying on the CLI default model or auto routing.
-
-### For Crush CLI (GLM)
-
-**Recommended**: `crush run --quiet "{prompt}" > {file}`
-
-- `--quiet`: Hides spinner, ensures clean text output
-- Subcommand is `run`, not `chat`
-
-### For Other CLIs
-
-Confirm non-interactive invocation format with user on first use. Store in config.
+Add an `invoke` line to `models.yaml`, e.g. `'<cli> --model <id> "{prompt}" > {output_file}'`. Placeholders: `{prompt}` `{prompt_file}` `{output_file}` `{requested_model}` `{resolved_model}` (the same values are also exported as `CROSS_REVIEW_*` env vars). There is **no model auto-resolution** — write the exact model id you want directly into the template. If a CLI needs to bypass a proxy, put it in the template (e.g. `env HTTP_PROXY= HTTPS_PROXY= ...`).
 
 ---
 
 ## Output Validation
 
-### Layer 1: Transport Validation (auto, hard fail)
+### Layer 1: Transport (hard fail)
 
-| Check | Fail Condition | Action |
-|-------|---------------|--------|
-| Non-empty | File is 0 bytes | Retry once → degrade |
-| Minimum size | < 200 bytes | Retry once → degrade |
-| No auth prompts | Contains `Opening authentication`, `Y/n`, `Do you want to continue` | Retry once → degrade |
-| No ANSI noise | Contains escape sequences `\x1b[` | Strip sequences, then validate |
-| No help text | Contains `Usage:` and `--help` | Retry once → degrade |
+Non-empty & > 200 bytes; no auth/interactive prompts (`Opening authentication`, `Y/n`, ...); ANSI stripped; not CLI help text. Fail → retry once (shortened prompt) → degrade.
 
-### Layer 2: Semantic Validation (auto, soft fail)
+This is the load-bearing guard against real CLI garbage (auth prompts, 0-byte output, 25–50KB session noise). Keep it.
 
-| Check | Fail Condition | Action |
-|-------|---------------|--------|
-| Has expected headings | Missing all of: `## 结论摘要`, `## 发现`, `## 方案` | Mark as low-quality |
-| Has substance | Zero findings or proposals | Mark as low-quality |
-| Has conclusion | Missing `## 一句话结论` | Mark as low-quality |
+### Layer 2: Semantic (soft — marks low quality, does NOT drop)
 
-### Retry Strategy
+Has an expected heading (`## 结论摘要` / `## 发现` / `## 方案`); has ≥1 finding or proposal; has `## 一句话结论`. A low-quality output is still **kept** (status `semantic_low_quality`, counts as success, not moved to `invalid/`) — it's a weak signal, not a reason to throw away a possibly-fine review.
 
-1. First retry: Use a shortened prompt (remove task materials, keep only task description + focus)
-2. If retry also fails: Degrade (remove this model from current round), inform user
-3. Failed outputs saved to `invalid/` subdirectory
+Failed (transport) outputs are saved under `invalid/`; raw stdout/stderr under `logs/`.
 
 ---
 
-## Cross-Round Context: Digest Protocol
+## Cross-Round Context: Digest
 
-### Default: Pass Clean Outputs
-
-External model outputs cleaned via `--output-last-message` (Codex) or equivalent methods are passed directly to subsequent rounds. Clean outputs preserve full information fidelity.
-
-### Optional Digest (When Output > 5000 Words)
-
-When a clean output exceeds ~5000 words, the lead model creates a digest:
-
-1. Extract key findings (with severity ratings)
-2. Extract disagreements and conflicts
-3. Extract open questions
-4. Remove redundant/duplicate points
-5. Save as `r{N}.digest.md`
-6. **Include note**: "This is a summary. Full content available in r{N}.{model}.md"
-
-The digest is sent to external models; the lead model itself reads the full output.
+Default: pass clean outputs directly (Codex is already de-noised via `--output-last-message`). Only when an output exceeds ~5000 words does the lead make a digest (`r{N}.digest.md`) to pass to the next round, noting "full content in `r{N}.{model}.md`". The lead itself reads the full output.
 
 ---
 
-## Intermediate Results Management
+## Degradation
 
-### Directory Structure
+| Available | Strategy |
+|-----------|----------|
+| Claude + Codex (normal) | Each takes its focus perspective; Codex is devil's advocate in R4 |
+| Claude only (Codex unavailable) | Lead switches perspectives across rounds for self-adversarial review; **at wrap-up, tell the user Codex didn't run and confidence is reduced** |
+
+Codex failing (after one retry) never aborts the run — degrade to single-model and reflect it honestly in the chat wrap-up and in `final.md`'s `models` field (list only models that actually produced output).
+
+---
+
+## Intermediate Results
 
 ```
-cross-review-records/
-  run-{YYYYMMDD-HHmm}/
-    r1.{model}.md         # Round 1 outputs
-    r1.digest.md          # Lead model's digest of Round 1
-    r2.{model}.md         # Round 2 outputs
-    r2.5.{model}.md       # Round 2.5 (if triggered)
-    r3.synthesis.md       # Round 3 candidate synthesis
-    r3b.synthesis.md      # Round 3b revision (if Round 4 found Critical)
-    r4.{model}.attack.md  # Round 4 attack reports
-    final.md              # Final output
-    status.json           # Structured wrapper status
-    logs/                 # stdout / stderr / attempt outputs
-    manifest.json         # Run metadata & checkpoint
-    invalid/              # Failed validation outputs
+cross-review-records/run-{YYYYMMDD-HHmm}/
+  task-alignment.md            # alignment card (Step 1)
+  status.json                  # per-call structured status
+  logs/   invalid/             # raw evidence / failed outputs
+  r1.claude.md  r1.codex.md
+  r2.*.md   r2.attack.codex.md   r2.5.codex.md
+  r3.synthesis.md   r3b.synthesis.md
+  r4.*.md   r5.review.codex.md
+  final.md                     # archive: ## 给你 + full process trail
+  action.md                    # optional, long action lists only
 ```
 
-### File Naming Convention
-
-**Strict format**: `r{round}.{model_name}.md`
-
-Forbidden patterns:
-- No free-form suffixes: `-ws`, `-v2`, `-session-fix`, `-raw`
-- No prompt files in the output directory
-- No `.txt` or `.raw.txt` files (always `.md`)
-
-Special files:
-- `r{N}.digest.md` — Digest for round N
-- `r3.synthesis.md` / `r3b.synthesis.md` — Synthesis documents
-- `final.md` — Final output
-- `manifest.json` — Run metadata
-
-### manifest.json
-
-Created at run start, updated after each step. Used for checkpoint/resume.
-
----
-
-## Execution Checklist
-
-After each round, lead model self-checks:
-
-- [ ] All outputs saved to run directory
-- [ ] File naming follows `r{N}.{model_name}.md` format
-- [ ] External model outputs passed transport validation
-- [ ] External model outputs passed semantic validation (or marked low-quality)
-- [ ] Digest created for cross-round context
-- [ ] All models in current round have completed
-- [ ] Key findings summary reported to user
-- [ ] `manifest.json` updated
-
-After all rounds complete:
-
-- [ ] `final.md` contains the final plan/conclusion
-- [ ] User provided with summary and suggested next steps
-- [ ] User asked whether to keep intermediate documents
+Strict naming `r{round}.{model}.md`; no free-form suffixes (`-ws`, `-v2`, ...). Re-running the same task always creates a new `run-*` dir — timestamp ordering means `ls -t` gives the latest; no version-link machinery needed. **Keep process files by default** — they are the audit and future-optimization trail. Only drop them if the user explicitly says they don't want process docs.

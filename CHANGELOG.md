@@ -1,5 +1,33 @@
 # Changelog
 
+## [3.1.0] - 2026-06-05
+
+### 重构：聚焦双模型 + 交付重心移回聊天 + 大幅瘦身
+
+实际使用反馈驱动：多模型在执行层不稳定（某个 CLI 卡死/超时把流程拖长），且 final.md 过载、用户拿不到人话结论。本版收敛范围、把交付重心从文档移回聊天、删掉大量过度设计。
+
+### Changed
+- **默认双模型 Claude + Codex**：不再编排任意多模型。其它 CLI 仍可通过 `models.yaml` 的 `invoke` 模板接入，但不再有自学习路由/版本漂移/三路启动等机制。
+- **交付重心 = 聊天收尾**：流程结束时主 Agent 必须在聊天窗口用人话讲清四件事（做了什么/评审结论/主模型判断/下一步）。`final.md` 从"用户必读交付物"降级为"留痕档案"（供回溯/下游 AI/未来优化）。
+- **任务对齐卡新增决策模式**：`需确认`（默认，收尾后等用户拍板）/ `授权自主`（主 Agent 直接按结论执行下一步并回报）。
+- **final.md 内部分层**：顶部 `## 给你`（人话结论、零代号）+ 正文完整过程留痕（保留各方立场与来源锚点，供审计）。
+- **frontmatter 闭集**：冻结为 12 字段、禁止新增——杜绝 `review_notes` 这类过程流水账塞进头部；`success_criteria` 单行、明细下沉正文。
+
+### Removed
+- **可学习模型注册表**（`registry.json` + canonical 学习 + 别名模糊匹配 + 候选排序 + fallback，约 400 行）：真实数据显示从未学成功、是负收益。
+- **CLI 版本漂移检测 + catalog TTL**、**三路启动状态机**、**模型动态解析**：随注册表一并移除。
+- **supersedes 版本链自动维护**（`mark-superseded`/`current.md`/红框 banner）、**archive-legacy 归档**、**run-init**、**manifest 断点续跑描述**：真实使用中 0 触发，删除。（`supersedes`/`superseded_by` 仍作为可选 frontmatter 字段保留，默认 null，向后兼容。）
+- runtime 子命令从 6 个减到 2 个：仅保留 `execute` 和 `check-final`。`cross_review_runtime.py` 从 1391 行精简到 705 行（砍去近一半，主要是注册表与版本链）。
+
+### Changed (check-final)
+- 不再用正则解析中文正文（脆弱、且实测从未对一份真 final.md 跑成功过）。改为只校验 **frontmatter**：必填字段 + 闭集（禁止多余字段）+ `task_type` 合法 + 行数上限。正文结构由主模型按模板自检。
+
+### Fixed
+- 修正测试中 `RUNTIME` 路径（`skills/cross-review` → `skills/jvever-cross-review`，此前导致测试全部失败）。
+
+### Kept（明确保留的护栏）
+- R1–R5 多模型对抗主轴、两层输出校验（挡 auth 提示/空输出/噪声）、降级策略、`status.json`/`logs/`/`invalid/` 留痕。
+
 ## [3.0.0] - 2026-04-15
 
 ### Breaking: final.md 改为硬约束编译产物

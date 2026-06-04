@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Cross Review runtime wrapper with structured status and learnable model registry."""
+"""Cross Review runtime wrapper: structured external-model execution + final.md frontmatter validation.
+
+Scope (v3.1): the skill orchestrates a fixed pair — Claude (lead, runs the skill) + Codex (external).
+Any other CLI can still be driven via a models.yaml `invoke` template, but there is no model
+auto-routing / learnable registry / version-drift machinery anymore (removed as over-engineering).
+"""
 
 from __future__ import annotations
 
@@ -16,14 +21,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-import yaml
-
 
 STATUS_SCHEMA_VERSION = 1
-REGISTRY_SCHEMA_VERSION = 1
 DEFAULT_MIN_OUTPUT_BYTES = 200
 DEFAULT_MAX_RETRIES = 1
-CATALOG_TTL_SECONDS = 24 * 60 * 60
 
 AUTH_PROMPT_PATTERNS = (
     "opening authentication",
@@ -48,7 +49,6 @@ MODEL_NOT_FOUND_PATTERNS = (
     "invalid model",
     "no such model",
 )
-RETRY_NEXT_CANDIDATE_STATUSES = {"permission_denied", "model_not_found"}
 SUCCESS_STATUSES = {"succeeded", "semantic_low_quality"}
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 EXPECTED_HEADINGS = ("## 结论摘要", "## 发现", "## 方案")
@@ -92,55 +92,14 @@ def atomic_write_json(path: Path, payload: Dict) -> None:
 
 
 def load_yaml(path: Path) -> Dict:
+    import yaml
+
     if not path.exists():
         raise CrossReviewRuntimeError(f"Config file not found: {path}")
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise CrossReviewRuntimeError(f"Config file is not a mapping: {path}")
     return data
-
-
-def load_registry(path: Path) -> Dict:
-    if not path.exists():
-        return {
-            "schema_version": REGISTRY_SCHEMA_VERSION,
-            "updated_at": now_iso(),
-            "tools": {},
-        }
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise CrossReviewRuntimeError(f"Registry file is not valid JSON: {path}") from exc
-    if not isinstance(data, dict):
-        raise CrossReviewRuntimeError(f"Registry file is not a mapping: {path}")
-    data.setdefault("schema_version", REGISTRY_SCHEMA_VERSION)
-    data.setdefault("tools", {})
-    return data
-
-
-def save_registry(path: Path, registry: Dict) -> None:
-    registry["updated_at"] = now_iso()
-    atomic_write_json(path, registry)
-
-
-def ensure_tool_state(registry: Dict, tool_key: str) -> Dict:
-    tools = registry.setdefault("tools", {})
-    tool_state = tools.setdefault(
-        tool_key,
-        {
-            "version": None,
-            "version_checked_at": None,
-            "catalog": {
-                "items": [],
-                "refreshed_at": None,
-                "refresh_reason": None,
-            },
-            "aliases": {},
-        },
-    )
-    tool_state.setdefault("catalog", {"items": [], "refreshed_at": None, "refresh_reason": None})
-    tool_state.setdefault("aliases", {})
-    return tool_state
 
 
 def load_status(path: Path, run_id: str) -> Dict:
@@ -189,24 +148,6 @@ def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
-def normalize_alias(value: Optional[str]) -> str:
-    if not value:
-        return ""
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
-
-
-def command_for_version(tool_key: str, cli_path: str, model_cfg: Dict) -> Optional[Sequence[str]]:
-    if model_cfg.get("version_command"):
-        return None
-    if tool_key == "codex":
-        return [cli_path, "--version"]
-    if tool_key == "gemini":
-        return [cli_path, "-v"]
-    if tool_key == "crush":
-        return [cli_path, "--version"]
-    return None
-
-
 def shell_command(command: str) -> List[str]:
     return [os.environ.get("SHELL", "/bin/zsh"), "-lc", command]
 
@@ -248,256 +189,6 @@ def run_process(
         "stderr_text": stderr_text,
         "exit_code": exit_code,
     }
-
-
-def detect_cli_version(tool_key: str, model_cfg: Dict) -> Optional[str]:
-    cli_path = model_cfg.get("cli_path") or tool_key
-    if model_cfg.get("version_command"):
-        result = run_process(shell_command(model_cfg["version_command"]), cwd=Path.cwd())
-    else:
-        argv = command_for_version(tool_key, cli_path, model_cfg)
-        if not argv:
-            return None
-        result = run_process(argv, cwd=Path.cwd())
-    if result["exit_code"] != 0:
-        return None
-    version = (result["stdout_text"] or result["stderr_text"]).strip()
-    return version.splitlines()[0] if version else None
-
-
-def parse_catalog_items(text: str) -> List[str]:
-    return [line.strip() for line in text.splitlines() if line.strip()]
-
-
-def refresh_catalog(tool_key: str, model_cfg: Dict, tool_state: Dict, reason: str) -> Dict:
-    cli_path = model_cfg.get("cli_path") or tool_key
-    if tool_key == "crush":
-        result = run_process([cli_path, "models"], cwd=Path.cwd())
-    elif model_cfg.get("catalog"):
-        result = run_process(shell_command(model_cfg["catalog"]), cwd=Path.cwd())
-    else:
-        return {
-            "refreshed": False,
-            "reason": None,
-            "items": [],
-            "error": None,
-        }
-    if result["exit_code"] != 0:
-        return {
-            "refreshed": False,
-            "reason": reason,
-            "items": tool_state.get("catalog", {}).get("items", []),
-            "error": result["stderr_text"] or result["stdout_text"],
-        }
-    items = parse_catalog_items(result["stdout_text"])
-    tool_state["catalog"] = {
-        "items": items,
-        "refreshed_at": now_iso(),
-        "refresh_reason": reason,
-    }
-    return {
-        "refreshed": True,
-        "reason": reason,
-        "items": items,
-        "error": None,
-    }
-
-
-def needs_catalog_refresh(tool_state: Dict, version: Optional[str], force: bool = False) -> Optional[str]:
-    if force:
-        return "forced"
-    if version and tool_state.get("version") and tool_state.get("version") != version:
-        return "version_changed"
-    catalog = tool_state.get("catalog", {})
-    if not catalog.get("items"):
-        return "missing_catalog"
-    refreshed_at = catalog.get("refreshed_at")
-    if not refreshed_at:
-        return "missing_catalog"
-    try:
-        refreshed = datetime.fromisoformat(refreshed_at)
-    except ValueError:
-        return "stale_catalog"
-    age = datetime.now().astimezone() - refreshed
-    if age.total_seconds() >= CATALOG_TTL_SECONDS:
-        return "stale_catalog"
-    return None
-
-
-def matching_candidates(items: Sequence[str], requested_model: str) -> List[str]:
-    requested_norm = normalize_alias(requested_model)
-    if not requested_norm:
-        return []
-    exact_matches: List[str] = []
-    soft_matches: List[str] = []
-    for item in items:
-        normalized_item = normalize_alias(item)
-        model_part = item.split("/", 1)[1] if "/" in item else item
-        normalized_model = normalize_alias(model_part)
-        if requested_norm in (normalized_item, normalized_model):
-            exact_matches.append(item)
-            continue
-        if normalized_model.startswith(requested_norm) or requested_norm.startswith(normalized_model):
-            soft_matches.append(item)
-    return exact_matches or soft_matches
-
-
-def ordered_candidates(alias_state: Dict, candidates: Sequence[str]) -> List[str]:
-    canonical_target = alias_state.get("canonical_target")
-    observations = alias_state.get("candidates", {})
-    success_targets: List[str] = []
-    unknown_targets: List[str] = []
-    failed_targets: List[str] = []
-    ordered: List[str] = []
-    if canonical_target in candidates:
-        ordered.append(canonical_target)
-    for target in candidates:
-        if target == canonical_target:
-            continue
-        status = observations.get(target, {}).get("last_status")
-        if status == "success":
-            success_targets.append(target)
-        elif status in RETRY_NEXT_CANDIDATE_STATUSES:
-            failed_targets.append(target)
-        else:
-            unknown_targets.append(target)
-    return ordered + success_targets + unknown_targets + failed_targets
-
-
-def candidate_targets_for_request(catalog_items: Sequence[str], requested_model: str) -> List[str]:
-    candidates = matching_candidates(catalog_items, requested_model)
-    if not candidates and requested_model in catalog_items:
-        candidates = [requested_model]
-    return candidates
-
-
-def resolve_model_target(
-    tool_key: str,
-    model_cfg: Dict,
-    registry: Dict,
-    requested_model: Optional[str],
-    force_refresh: bool = False,
-) -> Dict:
-    tool_state = ensure_tool_state(registry, tool_key)
-    cli_version = detect_cli_version(tool_key, model_cfg)
-    if cli_version:
-        tool_state["version_checked_at"] = now_iso()
-    refresh_reason = None
-    catalog_error = None
-    if cli_version:
-        refresh_reason = needs_catalog_refresh(tool_state, cli_version, force=force_refresh)
-        if refresh_reason:
-            refresh_result = refresh_catalog(tool_key, model_cfg, tool_state, refresh_reason)
-            catalog_error = refresh_result["error"]
-            if not refresh_result["refreshed"]:
-                refresh_reason = refresh_result["reason"]
-    tool_state["version"] = cli_version
-
-    if not requested_model:
-        requested_model = model_cfg.get("model_name")
-
-    if not requested_model:
-        return {
-            "tool_key": tool_key,
-            "requested_model": None,
-            "resolved_model": None,
-            "candidates": [],
-            "cli_version": cli_version,
-            "refresh_reason": refresh_reason,
-            "catalog_error": catalog_error,
-            "strategy": "static",
-        }
-
-    catalog_items = tool_state.get("catalog", {}).get("items", [])
-    if not catalog_items:
-        return {
-            "tool_key": tool_key,
-            "requested_model": requested_model,
-            "resolved_model": requested_model,
-            "candidates": [requested_model],
-            "cli_version": cli_version,
-            "refresh_reason": refresh_reason,
-            "catalog_error": catalog_error,
-            "strategy": "static",
-        }
-
-    alias_key = normalize_alias(requested_model)
-    alias_state = tool_state.setdefault("aliases", {}).setdefault(
-        alias_key,
-        {
-            "requested_model": requested_model,
-            "canonical_target": None,
-            "last_verified_at": None,
-            "source": None,
-            "candidates": {},
-        },
-    )
-    alias_state["requested_model"] = requested_model
-
-    candidates = candidate_targets_for_request(catalog_items, requested_model)
-    candidates = ordered_candidates(alias_state, candidates)
-    fallback_model = model_cfg.get("fallback_model")
-    fallback_candidates: List[str] = []
-    if fallback_model and normalize_alias(fallback_model) != normalize_alias(requested_model):
-        fallback_candidates = candidate_targets_for_request(catalog_items, fallback_model)
-        fallback_candidates = [candidate for candidate in fallback_candidates if candidate not in candidates]
-    resolved_model = candidates[0] if candidates else requested_model
-    if not candidates:
-        candidates = [requested_model]
-    candidates = list(candidates) + fallback_candidates
-    return {
-        "tool_key": tool_key,
-        "requested_model": requested_model,
-        "resolved_model": resolved_model,
-        "candidates": list(candidates),
-        "cli_version": cli_version,
-        "refresh_reason": refresh_reason,
-        "catalog_error": catalog_error,
-        "strategy": "catalog",
-    }
-
-
-def observation_error_excerpt(stdout_text: str, stderr_text: str) -> str:
-    excerpt = "\n".join(part for part in [stderr_text.strip(), stdout_text.strip()] if part)
-    excerpt = excerpt.strip()
-    return excerpt[:500]
-
-
-def record_model_observation(
-    registry: Dict,
-    tool_key: str,
-    requested_model: Optional[str],
-    resolved_model: Optional[str],
-    outcome: str,
-    error_excerpt: str,
-) -> None:
-    if not requested_model or not resolved_model:
-        return
-    tool_state = ensure_tool_state(registry, tool_key)
-    alias_key = normalize_alias(requested_model)
-    alias_state = tool_state.setdefault("aliases", {}).setdefault(
-        alias_key,
-        {
-            "requested_model": requested_model,
-            "canonical_target": None,
-            "last_verified_at": None,
-            "source": None,
-            "candidates": {},
-        },
-    )
-    alias_state["requested_model"] = requested_model
-    candidate = alias_state.setdefault("candidates", {}).setdefault(resolved_model, {})
-    candidate["last_status"] = outcome
-    candidate["last_seen_at"] = now_iso()
-    if error_excerpt:
-        candidate["last_error"] = error_excerpt
-    if outcome == "success":
-        candidate["last_success_at"] = now_iso()
-        alias_state["canonical_target"] = resolved_model
-        alias_state["last_verified_at"] = now_iso()
-        alias_state["source"] = "learned_from_success"
-    elif alias_state.get("canonical_target") == resolved_model and outcome in RETRY_NEXT_CANDIDATE_STATUSES:
-        alias_state["canonical_target"] = None
 
 
 def validate_transport(raw_output_text: str, stderr_text: str, exit_code: int, min_bytes: int) -> Dict:
@@ -593,6 +284,12 @@ def build_command_spec(
     requested_model: Optional[str],
     resolved_model: Optional[str],
 ) -> CommandSpec:
+    """Build the external CLI invocation.
+
+    `codex` is built in (the default external model): stdin prompt + --output-last-message.
+    Any other CLI is driven by its models.yaml `invoke` template — that is the single,
+    zero-machinery extension point for adding more models later.
+    """
     cli_path = model_cfg.get("cli_path") or tool_key
     if tool_key == "codex":
         argv = [
@@ -607,25 +304,11 @@ def build_command_spec(
         ]
         return CommandSpec(argv=argv, stdin_text=prompt_text, output_mode="file")
 
-    if tool_key == "gemini":
-        argv = [cli_path]
-        if requested_model:
-            argv.extend(["-m", requested_model])
-        argv.extend(["-p", prompt_text])
-        return CommandSpec(argv=argv, stdin_text=None, output_mode="stdout")
-
-    if tool_key == "crush":
-        argv = [cli_path, "run", "--quiet"]
-        model_target = resolved_model or requested_model or model_cfg.get("model_name")
-        if model_target:
-            argv.extend(["--model", model_target])
-        argv.append(prompt_text)
-        return CommandSpec(argv=argv, stdin_text=None, output_mode="stdout")
-
     invoke_template = model_cfg.get("invoke")
     if not invoke_template:
         raise CrossReviewRuntimeError(
-            f"Model '{tool_key}' is not supported by the structured runtime and has no invoke template."
+            f"Model '{tool_key}' has no invoke template in config and is not the built-in 'codex'. "
+            f"Add an `invoke:` line to models.yaml for this CLI."
         )
     substitutions = {
         "prompt": shlex.quote(prompt_text),
@@ -733,7 +416,6 @@ def read_text_file(path: Path) -> str:
 
 def execute_call(args: argparse.Namespace) -> int:
     config_path = expand_path(args.config)
-    registry_path = expand_path(args.registry)
     run_dir = expand_path(args.run_dir)
     runtime_paths = prepare_run_dirs(run_dir)
     status = load_status(runtime_paths["status_file"], run_dir.name)
@@ -745,7 +427,8 @@ def execute_call(args: argparse.Namespace) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cwd = expand_path(args.cwd) if args.cwd else Path.cwd()
 
-    call_record = {
+    # Write an initial record so a mid-run crash still leaves a trace.
+    status["calls"][args.call_id] = {
         "call_id": args.call_id,
         "model_key": model_key,
         "requested_model": args.requested_model,
@@ -759,7 +442,6 @@ def execute_call(args: argparse.Namespace) -> int:
         "resolution": None,
         "updated_at": now_iso(),
     }
-    status["calls"][args.call_id] = call_record
     save_status(runtime_paths["status_file"], status)
 
     config = load_yaml(config_path)
@@ -767,122 +449,83 @@ def execute_call(args: argparse.Namespace) -> int:
     if model_key not in models:
         raise CrossReviewRuntimeError(f"Model '{model_key}' not found in config: {config_path}")
     model_cfg = models[model_key]
-    registry = load_registry(registry_path)
     prompt_text = read_text_file(prompt_file)
     retry_prompt_text = read_text_file(retry_prompt_file) if retry_prompt_file else prompt_text
 
-    resolution = resolve_model_target(
-        tool_key=model_key,
-        model_cfg=model_cfg,
-        registry=registry,
-        requested_model=args.requested_model,
-        force_refresh=args.force_refresh,
-    )
-    save_registry(registry_path, registry)
-
-    candidates = resolution["candidates"] or [resolution["resolved_model"]]
-    attempts: List[Dict] = []
-    final_status = "transport_failed"
-    final_validation = None
-    retries_used = 0
-    successful_output = None
-    resolved_model = resolution["resolved_model"]
+    # No dynamic routing: use the requested alias if given, else the config's model_name.
+    resolved_model = args.requested_model or model_cfg.get("model_name")
 
     prompt_variants = [("primary", prompt_text)]
     if args.max_retries > 0:
         prompt_variants.append(("retry", retry_prompt_text))
 
-    for candidate_index, candidate in enumerate(candidates):
-        for prompt_index, (prompt_variant, active_prompt) in enumerate(prompt_variants):
-            attempt_number = len(attempts) + 1
-            attempt_result = run_attempt(
-                tool_key=model_key,
-                model_cfg=model_cfg,
-                prompt_text=active_prompt,
-                prompt_file=retry_prompt_file if prompt_variant == "retry" and retry_prompt_file else prompt_file,
-                attempt_number=attempt_number,
-                call_id=args.call_id,
-                cwd=cwd,
-                logs_dir=runtime_paths["logs_dir"],
-                requested_model=resolution["requested_model"],
-                resolved_model=candidate,
-                min_output_bytes=args.min_output_bytes,
-            )
-            attempts.append(
-                {
-                    "attempt": attempt_number,
-                    "prompt_variant": prompt_variant,
-                    "resolved_model": candidate,
-                    "command": attempt_result["command"],
-                    "started_at": attempt_result["started_at"],
-                    "duration_ms": attempt_result["duration_ms"],
-                    "exit_code": attempt_result["exit_code"],
-                    "stdout_path": relpath(attempt_result["stdout_path"], run_dir),
-                    "stderr_path": relpath(attempt_result["stderr_path"], run_dir),
-                    "output_path": relpath(attempt_result["output_path"], run_dir),
-                    "transport_validation": attempt_result["transport_validation"],
-                    "semantic_validation": attempt_result["semantic_validation"],
-                    "failure_class": attempt_result["failure_class"],
-                }
-            )
-            retries_used = max(0, len(attempts) - 1)
+    attempts: List[Dict] = []
+    final_status = "transport_failed"
+    final_validation: Optional[Dict] = None
+    successful_output: Optional[Path] = None
 
-            record_model_observation(
-                registry=registry,
-                tool_key=model_key,
-                requested_model=resolution["requested_model"],
-                resolved_model=candidate,
-                outcome="success"
-                if attempt_result["transport_validation"]["passed"]
-                else attempt_result["failure_class"],
-                error_excerpt=observation_error_excerpt(
-                    stdout_text=attempt_result["output_path"].read_text(encoding="utf-8"),
-                    stderr_text=attempt_result["stderr_path"].read_text(encoding="utf-8"),
-                ),
-            )
-            save_registry(registry_path, registry)
-
-            if attempt_result["transport_validation"]["passed"]:
-                successful_output = attempt_result["output_path"]
-                resolved_model = candidate
-                final_validation = {
-                    "transport": attempt_result["transport_validation"],
-                    "semantic": attempt_result["semantic_validation"],
-                }
-                final_status = (
-                    "succeeded"
-                    if attempt_result["semantic_validation"]["passed"]
-                    else "semantic_low_quality"
-                )
-                break
-
-            invalid_paths = copy_to_invalid(
-                {
-                    "output": attempt_result["output_path"],
-                    "stdout": attempt_result["stdout_path"],
-                    "stderr": attempt_result["stderr_path"],
-                },
-                runtime_paths["invalid_dir"],
-            )
-            attempts[-1]["invalid_artifacts"] = {
-                key: relpath(Path(value), run_dir) for key, value in invalid_paths.items()
+    for prompt_index, (prompt_variant, active_prompt) in enumerate(prompt_variants):
+        attempt_number = len(attempts) + 1
+        attempt_result = run_attempt(
+            tool_key=model_key,
+            model_cfg=model_cfg,
+            prompt_text=active_prompt,
+            prompt_file=retry_prompt_file if prompt_variant == "retry" and retry_prompt_file else prompt_file,
+            attempt_number=attempt_number,
+            call_id=args.call_id,
+            cwd=cwd,
+            logs_dir=runtime_paths["logs_dir"],
+            requested_model=args.requested_model,
+            resolved_model=resolved_model,
+            min_output_bytes=args.min_output_bytes,
+        )
+        attempts.append(
+            {
+                "attempt": attempt_number,
+                "prompt_variant": prompt_variant,
+                "resolved_model": resolved_model,
+                "command": attempt_result["command"],
+                "started_at": attempt_result["started_at"],
+                "duration_ms": attempt_result["duration_ms"],
+                "exit_code": attempt_result["exit_code"],
+                "stdout_path": relpath(attempt_result["stdout_path"], run_dir),
+                "stderr_path": relpath(attempt_result["stderr_path"], run_dir),
+                "output_path": relpath(attempt_result["output_path"], run_dir),
+                "transport_validation": attempt_result["transport_validation"],
+                "semantic_validation": attempt_result["semantic_validation"],
+                "failure_class": attempt_result["failure_class"],
             }
+        )
 
-            failure_class = attempt_result["failure_class"]
-            should_try_next_candidate = (
-                failure_class in RETRY_NEXT_CANDIDATE_STATUSES
-                and candidate_index < len(candidates) - 1
+        if attempt_result["transport_validation"]["passed"]:
+            successful_output = attempt_result["output_path"]
+            final_validation = {
+                "transport": attempt_result["transport_validation"],
+                "semantic": attempt_result["semantic_validation"],
+            }
+            final_status = (
+                "succeeded"
+                if attempt_result["semantic_validation"]["passed"]
+                else "semantic_low_quality"
             )
-            if should_try_next_candidate:
-                break
-
-            if prompt_index >= args.max_retries:
-                break
-
-        if final_status in SUCCESS_STATUSES:
             break
-        if candidate_index >= len(candidates) - 1:
-            continue
+
+        invalid_paths = copy_to_invalid(
+            {
+                "output": attempt_result["output_path"],
+                "stdout": attempt_result["stdout_path"],
+                "stderr": attempt_result["stderr_path"],
+            },
+            runtime_paths["invalid_dir"],
+        )
+        attempts[-1]["invalid_artifacts"] = {
+            key: relpath(Path(value), run_dir) for key, value in invalid_paths.items()
+        }
+
+        if prompt_index >= args.max_retries:
+            break
+
+    retries_used = max(0, len(attempts) - 1)
 
     if successful_output:
         output_path.write_text(successful_output.read_text(encoding="utf-8"), encoding="utf-8")
@@ -893,10 +536,11 @@ def execute_call(args: argparse.Namespace) -> int:
             "semantic": {"passed": False, "issues": ["transport_validation_failed"]},
         }
 
-    call_record = {
+    status = load_status(runtime_paths["status_file"], run_dir.name)
+    status["calls"][args.call_id] = {
         "call_id": args.call_id,
         "model_key": model_key,
-        "requested_model": resolution["requested_model"],
+        "requested_model": args.requested_model,
         "resolved_model": resolved_model,
         "output_file": relpath(output_path, run_dir),
         "cwd": str(cwd),
@@ -904,73 +548,22 @@ def execute_call(args: argparse.Namespace) -> int:
         "retries_used": retries_used,
         "final_status": final_status,
         "validation": final_validation,
-        "resolution": resolution,
+        "resolution": {
+            "strategy": "static",
+            "requested_model": args.requested_model,
+            "resolved_model": resolved_model,
+        },
         "updated_at": now_iso(),
     }
-    status = load_status(runtime_paths["status_file"], run_dir.name)
-    status["calls"][args.call_id] = call_record
     save_status(runtime_paths["status_file"], status)
     return 0 if final_status in SUCCESS_STATUSES else 1
 
 
-def sync_registry(args: argparse.Namespace) -> int:
-    config_path = expand_path(args.config)
-    registry_path = expand_path(args.registry)
-    config = load_yaml(config_path)
-    registry = load_registry(registry_path)
-    models = config.get("models") or {}
-    results: List[Dict] = []
-    for model_key, model_cfg in models.items():
-        if args.model and model_key != args.model:
-            continue
-        tool_state = ensure_tool_state(registry, model_key)
-        version = detect_cli_version(model_key, model_cfg)
-        tool_state["version_checked_at"] = now_iso()
-        if version:
-            refresh_reason = needs_catalog_refresh(tool_state, version, force=args.force_refresh)
-            if refresh_reason:
-                refresh_result = refresh_catalog(model_key, model_cfg, tool_state, refresh_reason)
-            else:
-                refresh_result = {"refreshed": False, "reason": None, "items": tool_state["catalog"]["items"], "error": None}
-            tool_state["version"] = version
-        else:
-            refresh_result = {"refreshed": False, "reason": None, "items": tool_state["catalog"]["items"], "error": "version_check_failed"}
-        results.append(
-            {
-                "model": model_key,
-                "version": tool_state.get("version"),
-                "catalog_size": len(tool_state.get("catalog", {}).get("items", [])),
-                "refresh_reason": refresh_result["reason"],
-                "catalog_error": refresh_result["error"],
-            }
-        )
-    save_registry(registry_path, registry)
-    print(json.dumps({"results": results}, ensure_ascii=False, indent=2))
-    return 0
-
-
-def resolve_model(args: argparse.Namespace) -> int:
-    config_path = expand_path(args.config)
-    registry_path = expand_path(args.registry)
-    config = load_yaml(config_path)
-    models = config.get("models") or {}
-    if args.model not in models:
-        raise CrossReviewRuntimeError(f"Model '{args.model}' not found in config: {config_path}")
-    registry = load_registry(registry_path)
-    resolution = resolve_model_target(
-        tool_key=args.model,
-        model_cfg=models[args.model],
-        registry=registry,
-        requested_model=args.requested_model,
-        force_refresh=args.force_refresh,
-    )
-    save_registry(registry_path, registry)
-    print(json.dumps(resolution, ensure_ascii=False, indent=2))
-    return 0
-
-
 # --------------------------------------------------------------------------
-# final.md hard validation (Issue #core: compile final.md, don't just draft it)
+# final.md frontmatter validation (lightweight; structure of body is the lead
+# model's self-check responsibility, see SKILL.md). We only validate the
+# machine-readable frontmatter here — that is the one piece worth a hard gate,
+# and it is parsed via YAML (not brittle Chinese-markdown regex).
 # --------------------------------------------------------------------------
 
 FINAL_REQUIRED_FRONTMATTER = (
@@ -983,19 +576,22 @@ FINAL_REQUIRED_FRONTMATTER = (
     "status",
     "success_criteria",
 )
-FINAL_REQUIRED_SECTIONS = (
-    "## TL;DR",
-    "## 1. 任务与约束",
-    "## 2. 核心分歧与裁决",
-    "## 3. 最终方案",
-    "## 5. 行动项",
-    "## 6. 遗留风险与未决问题",
-)
+# Closed set: anything outside this is rejected, so process scaffolding like
+# `review_notes` (a 22-item changelog) or `unavailable` can never leak back into
+# the header. Keep this in sync with templates/final.md.tmpl.
+FINAL_ALLOWED_FRONTMATTER = set(FINAL_REQUIRED_FRONTMATTER) | {
+    "supersedes",
+    "superseded_by",
+    "synthesis_bias_note",
+    "independent_review",
+}
 FINAL_MAX_LINES = 800
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
 
 
 def parse_frontmatter(text: str) -> Dict:
+    import yaml
+
     match = FRONTMATTER_RE.match(text)
     if not match:
         return {"_raw_body": text, "_has_frontmatter": False}
@@ -1010,77 +606,6 @@ def parse_frontmatter(text: str) -> Dict:
     return data
 
 
-def count_tldr_sentences(body: str) -> int:
-    # Extract content between "## TL;DR" and next "## "
-    match = re.search(r"## TL;DR\s*\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
-    if not match:
-        return 0
-    tldr = match.group(1).strip()
-    # Strip template placeholders
-    if re.match(r"^\s*\{\{", tldr) or not tldr:
-        return 0
-    sentences = re.split(r"[。.!?！？]\s*", tldr)
-    return len([s for s in sentences if s.strip()])
-
-
-def divergence_table_rows(body: str) -> int:
-    # Extract content between "## 2. 核心分歧与裁决" and next "## "
-    match = re.search(r"## 2\.\s*核心分歧与裁决\s*\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
-    if not match:
-        return 0
-    section = match.group(1)
-    if "无关键分歧" in section:
-        return 1  # explicit "no divergence" counts as valid
-    rows = re.findall(r"^\|[^|\n]+\|[^|\n]+\|", section, re.MULTILINE)
-    # Filter header and separator rows
-    data_rows = [r for r in rows if "---" not in r and "议题" not in r and "Model" not in r]
-    return len(data_rows)
-
-
-def decision_fields_complete(body: str) -> Dict:
-    # Extract all "### 决策 N / 修复 N / 方案要点 N / 结构要点 N" blocks
-    pattern = re.compile(r"### (决策|修复|方案要点|结构要点)\s+\d+[：:].*?(?=\n### |\n## |\Z)", re.DOTALL)
-    blocks = pattern.findall(body)
-    block_matches = pattern.finditer(body)
-    issues: List[str] = []
-    count = 0
-    for match in block_matches:
-        count += 1
-        block = match.group(0)
-        missing = []
-        for field in ("做什么", "为什么", "来源"):
-            if f"**{field}**" not in block:
-                missing.append(field)
-        if missing:
-            issues.append(f"决策块 #{count} 缺字段: {', '.join(missing)}")
-    return {"total_decisions": count, "issues": issues}
-
-
-def action_p0_count(body: str) -> int:
-    match = re.search(r"## 5\.\s*行动项\s*\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
-    if not match:
-        return 0
-    section = match.group(1)
-    if "无需行动" in section:
-        return 1  # explicit pass
-    # Count lines like "- [ ] **P0-N** ..." or "- [ ] **P0-N**..."
-    actions = re.findall(r"^\s*-\s*\[[ x]\]\s*\*\*P0-\d+\*\*", section, re.MULTILINE)
-    return len(actions)
-
-
-def risk_field_filled(body: str) -> bool:
-    match = re.search(r"## 6\.\s*遗留风险与未决问题\s*\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
-    if not match:
-        return False
-    section = match.group(1).strip()
-    if not section:
-        return False
-    # Placeholder pattern starts with {{
-    if re.match(r"^\s*\{\{", section):
-        return False
-    return True
-
-
 def check_final_md(path: Path) -> Dict:
     if not path.exists():
         return {"passed": False, "errors": [f"file not found: {path}"], "checks": {}}
@@ -1090,73 +615,41 @@ def check_final_md(path: Path) -> Dict:
     errors: List[str] = []
     checks: Dict[str, Dict] = {}
 
-    # Check 1: frontmatter 8 required fields
-    check1_missing = []
+    # Check 1: required frontmatter fields present
+    missing: List[str] = []
     if not fm.get("_has_frontmatter"):
         errors.append("frontmatter 缺失（文件必须以 `---\\n...\\n---\\n` 开头）")
-        check1_missing = list(FINAL_REQUIRED_FRONTMATTER)
+        missing = list(FINAL_REQUIRED_FRONTMATTER)
     else:
         if fm.get("_parse_error"):
             errors.append(f"frontmatter YAML 解析失败: {fm['_parse_error']}")
         for field in FINAL_REQUIRED_FRONTMATTER:
             if field not in fm:
-                check1_missing.append(field)
-    checks["frontmatter_fields"] = {
-        "passed": not check1_missing,
-        "missing": check1_missing,
-    }
+                missing.append(field)
+    checks["frontmatter_fields"] = {"passed": not missing, "missing": missing}
 
-    body = fm.get("_raw_body", text)
+    # Check 2: closed set — no fields outside the allow-list (blocks header overload)
+    unexpected: List[str] = []
+    if fm.get("_has_frontmatter") and not fm.get("_parse_error"):
+        unexpected = sorted(
+            key for key in fm if not key.startswith("_") and key not in FINAL_ALLOWED_FRONTMATTER
+        )
+    checks["frontmatter_closed_set"] = {"passed": not unexpected, "unexpected": unexpected}
 
-    # Check 2: TL;DR >= 3 sentences
-    tldr_sentence_count = count_tldr_sentences(body)
-    checks["tldr_sufficient"] = {
-        "passed": tldr_sentence_count >= 3,
-        "sentence_count": tldr_sentence_count,
-    }
-
-    # Check 3: §2 divergence table >= 1 data row or "无关键分歧"
-    div_rows = divergence_table_rows(body)
-    checks["divergence_table"] = {
-        "passed": div_rows >= 1,
-        "rows": div_rows,
-    }
-
-    # Check 4: each decision has 做什么/为什么/来源
-    dec_check = decision_fields_complete(body)
-    checks["decision_fields"] = {
-        "passed": dec_check["total_decisions"] >= 1 and not dec_check["issues"],
-        "total_decisions": dec_check["total_decisions"],
-        "issues": dec_check["issues"],
-    }
-
-    # Check 5: P0 action items >= 1 or "无需行动"
-    p0_count = action_p0_count(body)
-    checks["p0_actions"] = {
-        "passed": p0_count >= 1,
-        "count": p0_count,
-    }
-
-    # Check 6: risk field filled
-    checks["risk_field"] = {
-        "passed": risk_field_filled(body),
-    }
-
-    # Check 7: task_type consistent with body structure (advisory only)
+    # Check 3: task_type is one of the known kinds
     task_type = fm.get("task_type") if fm.get("_has_frontmatter") else None
-    checks["task_type_consistent"] = {
+    checks["task_type_valid"] = {
         "passed": task_type in ("review", "design", "discuss", "create"),
         "task_type": task_type,
     }
 
-    # Check 8: total line count
+    # Check 4: total line count under the cap (overflow → push detail into trace/appendix)
     checks["line_count"] = {
         "passed": line_count <= FINAL_MAX_LINES,
         "lines": line_count,
         "max": FINAL_MAX_LINES,
     }
 
-    # Aggregate
     all_passed = all(c.get("passed") for c in checks.values()) and not errors
     return {
         "passed": all_passed,
@@ -1172,207 +665,28 @@ def check_final_command(args: argparse.Namespace) -> int:
     return 0 if result["passed"] else 1
 
 
-# --------------------------------------------------------------------------
-# archive-legacy: move old non-run-* files into _archive/
-# --------------------------------------------------------------------------
-
-RUN_DIR_RE = re.compile(r"^run-\d{8}-\d{4}$")
-
-
-def archive_legacy_files(records_dir: Path) -> Dict:
-    if not records_dir.exists():
-        return {"moved": [], "error": f"directory not found: {records_dir}"}
-    archive_dir = records_dir / "_archive"
-    moved: List[str] = []
-    skipped: List[str] = []
-    for child in sorted(records_dir.iterdir()):
-        if child.name == "_archive":
-            continue
-        if child.name == "current.md":
-            continue
-        if child.name.startswith(".") and child.name != ".DS_Store":
-            continue
-        if child.is_dir() and RUN_DIR_RE.match(child.name):
-            continue
-        # Treat everything else as legacy
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        target = archive_dir / child.name
-        if target.exists():
-            # Add timestamp to avoid collision
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            target = archive_dir / f"{child.stem}-{stamp}{child.suffix}"
-        try:
-            child.rename(target)
-            moved.append(f"{child.name} -> _archive/{target.name}")
-        except OSError as exc:
-            skipped.append(f"{child.name}: {exc}")
-    return {"moved": moved, "skipped": skipped, "archive_dir": str(archive_dir)}
-
-
-def archive_legacy_command(args: argparse.Namespace) -> int:
-    result = archive_legacy_files(Path(args.dir).expanduser())
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
-
-
-# --------------------------------------------------------------------------
-# mark-superseded: link old and new run's final.md
-# --------------------------------------------------------------------------
-
-SUPERSEDED_BANNER = "> ⚠️ **本 run 已被 {new_run} 取代。最新结论请见 `../{new_run}/final.md`**\n\n"
-
-
-def update_frontmatter_field(text: str, field: str, value: str) -> str:
-    # Replace existing field, or append to frontmatter block
-    pattern = re.compile(rf"^({field}:\s*).*$", re.MULTILINE)
-    if pattern.search(text):
-        return pattern.sub(rf"\g<1>{value}", text, count=1)
-    # Insert before closing ---
-    return re.sub(r"^---\n(.*?)\n---\n", rf"---\n\1\n{field}: {value}\n---\n", text, count=1, flags=re.DOTALL)
-
-
-def mark_superseded_command(args: argparse.Namespace) -> int:
-    records_dir = Path(args.records_dir).expanduser()
-    old_run = args.old
-    new_run = args.new
-    old_final = records_dir / old_run / "final.md"
-    new_final = records_dir / new_run / "final.md"
-    if not old_final.exists():
-        print(json.dumps({"error": f"old final not found: {old_final}"}), file=sys.stderr)
-        return 2
-    if not new_final.exists():
-        print(json.dumps({"error": f"new final not found: {new_final}"}), file=sys.stderr)
-        return 2
-
-    # Update old final.md
-    old_text = old_final.read_text(encoding="utf-8")
-    old_text = update_frontmatter_field(old_text, "status", '"superseded"')
-    old_text = update_frontmatter_field(old_text, "superseded_by", f'"{new_run}"')
-    # Insert banner after frontmatter (only if not already present)
-    banner = SUPERSEDED_BANNER.format(new_run=new_run)
-    if "本 run 已被" not in old_text:
-        old_text = re.sub(
-            r"^(---\n.*?\n---\n)",
-            rf"\g<1>\n{banner}",
-            old_text,
-            count=1,
-            flags=re.DOTALL,
-        )
-    old_final.write_text(old_text, encoding="utf-8")
-
-    # Update new final.md
-    new_text = new_final.read_text(encoding="utf-8")
-    new_text = update_frontmatter_field(new_text, "supersedes", f'"{old_run}"')
-    new_final.write_text(new_text, encoding="utf-8")
-
-    # Update current.md
-    current = records_dir / "current.md"
-    current.write_text(f"{new_run}/final.md\n", encoding="utf-8")
-
-    print(json.dumps({
-        "old_run": old_run,
-        "new_run": new_run,
-        "current": str(current),
-    }, ensure_ascii=False, indent=2))
-    return 0
-
-
-# --------------------------------------------------------------------------
-# run-init: archive legacy + detect active history
-# --------------------------------------------------------------------------
-
-def detect_active_runs(records_dir: Path) -> List[Dict]:
-    if not records_dir.exists():
-        return []
-    results: List[Dict] = []
-    for child in sorted(records_dir.iterdir(), reverse=True):
-        if not (child.is_dir() and RUN_DIR_RE.match(child.name)):
-            continue
-        final_md = child / "final.md"
-        if not final_md.exists():
-            continue
-        fm = parse_frontmatter(final_md.read_text(encoding="utf-8"))
-        if not fm.get("_has_frontmatter"):
-            continue
-        if fm.get("status") == "superseded":
-            continue
-        results.append({
-            "run_id": child.name,
-            "task": fm.get("task"),
-            "task_type": fm.get("task_type"),
-            "status": fm.get("status", "active"),
-            "created_at": fm.get("created_at"),
-            "path": str(final_md),
-        })
-    return results
-
-
-def run_init_command(args: argparse.Namespace) -> int:
-    records_dir = Path(args.dir).expanduser()
-    records_dir.mkdir(parents=True, exist_ok=True)
-    archive = archive_legacy_files(records_dir)
-    active = detect_active_runs(records_dir)
-    print(json.dumps({
-        "archived": archive,
-        "active_runs": active,
-    }, ensure_ascii=False, indent=2))
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     default_config = str(Path.home() / ".config" / "cross-review" / "models.yaml")
-    default_registry = str(Path.home() / ".config" / "cross-review" / "registry.json")
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     execute_parser = subparsers.add_parser("execute", help="Run one external model call through the runtime wrapper.")
     execute_parser.add_argument("--config", default=default_config, help="Path to models.yaml")
-    execute_parser.add_argument("--registry", default=default_registry, help="Path to registry.json")
     execute_parser.add_argument("--run-dir", required=True, help="Run directory for status.json, logs/, invalid/")
-    execute_parser.add_argument("--call-id", required=True, help="Stable call id such as r1.gemini")
+    execute_parser.add_argument("--call-id", required=True, help="Stable call id such as r1.codex")
     execute_parser.add_argument("--model", required=True, help="Model key from models.yaml")
     execute_parser.add_argument("--prompt-file", required=True, help="Prompt file path")
     execute_parser.add_argument("--retry-prompt-file", help="Optional retry prompt file path")
     execute_parser.add_argument("--output-file", required=True, help="Output file path, relative to run dir or absolute")
     execute_parser.add_argument("--cwd", help="Working directory for the external CLI")
-    execute_parser.add_argument("--requested-model", help="Requested model alias such as GLM5.1")
-    execute_parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="Prompt retries per candidate")
+    execute_parser.add_argument("--requested-model", help="Optional model id passed through to the CLI invoke template")
+    execute_parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="Prompt retries on failure")
     execute_parser.add_argument("--min-output-bytes", type=int, default=DEFAULT_MIN_OUTPUT_BYTES, help="Minimum sanitized output size")
-    execute_parser.add_argument("--force-refresh", action="store_true", help="Force a catalog refresh before resolution")
     execute_parser.set_defaults(func=execute_call)
 
-    sync_parser = subparsers.add_parser("sync-registry", help="Refresh CLI versions and model catalogs into registry.json")
-    sync_parser.add_argument("--config", default=default_config, help="Path to models.yaml")
-    sync_parser.add_argument("--registry", default=default_registry, help="Path to registry.json")
-    sync_parser.add_argument("--model", help="Optional single model key to sync")
-    sync_parser.add_argument("--force-refresh", action="store_true", help="Force catalog refresh")
-    sync_parser.set_defaults(func=sync_registry)
-
-    resolve_parser = subparsers.add_parser("resolve-model", help="Resolve a requested model alias using the registry.")
-    resolve_parser.add_argument("--config", default=default_config, help="Path to models.yaml")
-    resolve_parser.add_argument("--registry", default=default_registry, help="Path to registry.json")
-    resolve_parser.add_argument("--model", required=True, help="Model key from models.yaml")
-    resolve_parser.add_argument("--requested-model", required=True, help="Requested model alias")
-    resolve_parser.add_argument("--force-refresh", action="store_true", help="Force catalog refresh")
-    resolve_parser.set_defaults(func=resolve_model)
-
-    check_final_parser = subparsers.add_parser("check-final", help="Validate final.md against the hard template (8 checks).")
+    check_final_parser = subparsers.add_parser("check-final", help="Validate final.md frontmatter (required fields + closed set + line cap).")
     check_final_parser.add_argument("--file", required=True, help="Path to final.md")
     check_final_parser.set_defaults(func=check_final_command)
-
-    archive_parser = subparsers.add_parser("archive-legacy", help="Move non-run-* files in cross-review-records/ into _archive/.")
-    archive_parser.add_argument("--dir", required=True, help="Path to cross-review-records/")
-    archive_parser.set_defaults(func=archive_legacy_command)
-
-    superseded_parser = subparsers.add_parser("mark-superseded", help="Mark an old run as superseded by a new run.")
-    superseded_parser.add_argument("--records-dir", default="cross-review-records", help="Path to cross-review-records/")
-    superseded_parser.add_argument("--old", required=True, help="Old run id, e.g. run-20260410-0915")
-    superseded_parser.add_argument("--new", required=True, help="New run id, e.g. run-20260415-1535")
-    superseded_parser.set_defaults(func=mark_superseded_command)
-
-    run_init_parser = subparsers.add_parser("run-init", help="Archive legacy files + detect active historical runs (used at Step 4 in SKILL.md).")
-    run_init_parser.add_argument("--dir", required=True, help="Path to cross-review-records/")
-    run_init_parser.set_defaults(func=run_init_command)
 
     return parser
 
