@@ -4,6 +4,13 @@
 Scope (v3.1): the skill orchestrates a fixed pair — Claude (lead, runs the skill) + Codex (external).
 Any other CLI can still be driven via a models.yaml `invoke` template, but there is no model
 auto-routing / learnable registry / version-drift machinery anymore (removed as over-engineering).
+
+@input:  subcommand `execute` (--config models.yaml, --run-dir, --call-id, --model, --prompt-file,
+         --output-file, ...) or `check-final` (--file final.md)
+@output: execute → sanitized external-CLI output at --output-file + status.json/logs under --run-dir;
+         check-final → frontmatter validation verdict via exit code
+@rule:   external model calls in this skill must go through this wrapper (structured status/retry/
+         validation); CLI interface changes must be synced to SKILL.md
 """
 
 from __future__ import annotations
